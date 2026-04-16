@@ -968,7 +968,7 @@ export default function App() {
                           >
                           <td className="px-4 py-3">
                             <div className="flex flex-col min-w-[120px]">
-                              <button onClick={() => window.open(`https://www.torn.com/bazaar.php?userId=${listing.player_id}#/`, '_blank')} className="text-[11px] font-bold text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors text-left truncate max-w-[140px] group/name">
+                              <button onClick={() => window.open(`https://www.torn.com/profiles.php?XID=${listing.player_id}`, '_blank')} className="text-[11px] font-bold text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors text-left truncate max-w-[140px] group/name">
                                 <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${seller?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : seller?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-700'}`} />
                                 <span className="truncate">{listing.player_name || `User#${listing.player_id}`}</span>
                               </button>
