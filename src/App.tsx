@@ -288,17 +288,31 @@ export default function App() {
     setActiveItemId('');
   };
 
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
   const fetchSellerProfile = async (sellerId: number, force = false) => {
     if (sellerDetails[sellerId] && !force) return;
     try {
-      const resp = await fetch(`${TORN_API_BASE}/user/${sellerId}?selections=profile&key=${apiKey}&ts=${Date.now()}`);
+      const resp = await fetch(`${TORN_API_BASE}/user/${sellerId}?selections=profile&key=${apiKey}&ts=${Math.floor(Date.now() / 10000)}`);
       const data = await resp.json();
       if (!data.error) {
         setSellerDetails(prev => ({ ...prev, [sellerId]: { ...data, seller_id: sellerId } }));
       }
     } catch (e) {
-      console.error("Failed to fetch seller profile", e);
+      // Silently handle transient network errors to avoid console noise
     }
+  };
+
+  const syncSellersBatch = async (ids: number[]) => {
+    if (!ids.length || !isLoggedIn || !apiKey) return;
+    setIsSyncingSellers(true);
+    // Batch requests to be friendly to Torn API
+    for (let i = 0; i < ids.length; i += 2) {
+      const batch = ids.slice(i, i + 2);
+      await Promise.all(batch.map(sid => fetchSellerProfile(sid)));
+      if (i + 2 < ids.length) await sleep(150); // Small gap between batches
+    }
+    setIsSyncingSellers(false);
   };
 
   const fetchMarketData = async (id: string, isAuto = false) => {
@@ -307,9 +321,9 @@ export default function App() {
     else setIsRefreshing(true);
     
     setError(null);
-    if (!isAuto) setItemIdInput(''); // Only clear search on manual select, not auto-refresh
+    if (!isAuto) setItemIdInput(''); 
     try {
-      const response = await fetch(`${MARKETPLACE_API_BASE}/${id}?ts=${Date.now()}`);
+      const response = await fetch(`${MARKETPLACE_API_BASE}/${id}?ts=${Math.floor(Date.now() / 60000)}`);
       if (!response.ok) throw new Error('Item ID invalid.');
       const data: MarketplaceData = await response.json();
       
@@ -317,14 +331,9 @@ export default function App() {
       setMarketData(data);
       setLastSyncTime(new Date().toLocaleTimeString());
       
-      const targetSellers = data.listings.slice(0, 30).map(l => l.player_id); // Increased to 30 for better filtering
-      setIsSyncingSellers(true);
-      // Fetch in small batches to preserve API
-      for (let i = 0; i < targetSellers.length; i += 3) {
-        const batch = targetSellers.slice(i, i + 3);
-        await Promise.all(batch.map(sid => fetchSellerProfile(sid, true)));
-      }
-      setIsSyncingSellers(false);
+      // Initial sync of the visible chunk
+      const initialIds = data.listings.slice(0, 10).map(l => l.player_id);
+      syncSellersBatch(initialIds);
 
       if (!selectedItems.find(i => i.id === id)) {
         const itemInfo = allItems.find(it => it.id === id) || ITEMS_DATABASE.find(it => it.id === id);
@@ -339,12 +348,51 @@ export default function App() {
     }
   };
 
+  // Robust Seller Intel Syncing
   useEffect(() => {
     if (marketData && isLoggedIn) {
-       const targetSellers = marketData.listings.slice(0, listingsToShow).map(l => l.player_id);
-       targetSellers.forEach(sid => fetchSellerProfile(sid));
+      const visibleListings = marketData.listings
+        .filter(listing => {
+          const seller = sellerDetails[listing.player_id];
+          if (!seller) return true; 
+          
+          const matchesLevel = seller.level >= filters.minLevel && seller.level <= filters.maxLevel;
+          const matchesAge = seller.age >= filters.minAge && seller.age <= filters.maxAge;
+          
+          if (filters.statuses.length === 0) return matchesLevel && matchesAge;
+          
+          const statusGroups = [
+            { name: 'connectivity', items: ['Online', 'Offline'] },
+            { name: 'location', items: ['In Torn', 'Travel', 'Abroad'] },
+            { name: 'health', items: ['Okay', 'Hospital'] }
+          ];
+
+          return statusGroups.every(group => {
+            const selectedInGroup = filters.statuses.filter(s => group.items.includes(s));
+            if (selectedInGroup.length === 0) return true;
+            return selectedInGroup.some(s => {
+              if (s === 'Okay') return getSimpleStatus(seller.status) !== 'Hospital';
+              if (s === 'Online') return seller.last_action.status === 'Online';
+              if (s === 'Offline') return seller.last_action.status === 'Offline';
+              if (s === 'In Torn') {
+                const sStatus = getSimpleStatus(seller.status);
+                return sStatus !== 'Travel' && sStatus !== 'Abroad';
+              }
+              return getSimpleStatus(seller.status) === s;
+            });
+          });
+        })
+        .slice(0, listingsToShow + 5); 
+
+      const targetSellers = visibleListings
+        .map(l => l.player_id)
+        .filter(id => !sellerDetails[id]); // Only sync what we don't have
+      
+      if (targetSellers.length > 0) {
+        syncSellersBatch(targetSellers);
+      }
     }
-  }, [listingsToShow, marketData, isLoggedIn]);
+  }, [listingsToShow, marketData, isLoggedIn, filters]);
 
   const toggleItem = (item: SelectedItem) => {
     if (selectedItems.find(i => i.id === item.id)) {
@@ -564,14 +612,14 @@ export default function App() {
                         <X className="w-3 h-3" />
                       </button>
                     </div>
-                    <div className="flex items-center gap-1.5 px-2 py-1 bg-black/60 rounded-lg border border-white/5 group">
-                      <AlertCircle className={`w-2.5 h-2.5 ${alertPrices[item.id] ? 'text-purple-400' : 'text-gray-700'}`} />
+                    <div className="flex items-center gap-1.5 px-2 py-1 bg-purple-900/10 rounded-lg border border-purple-500/20 group hover:border-purple-500/40 transition-colors">
+                      <AlertCircle className={`w-2.5 h-2.5 ${alertPrices[item.id] ? 'text-purple-400' : 'text-purple-900'}`} />
                       <input 
                         type="number" 
                         placeholder="Price Alert" 
                         value={alertPrices[item.id] || ''} 
                         onChange={(e) => setAlertPrices(prev => ({ ...prev, [item.id]: e.target.value }))}
-                        className="w-16 bg-transparent text-[9px] font-mono text-white focus:outline-none placeholder:text-gray-800"
+                        className="w-16 bg-transparent text-[9px] font-mono text-white focus:outline-none placeholder:text-gray-600"
                       />
                     </div>
                   </div>
@@ -722,23 +770,38 @@ export default function App() {
                           </button>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          {['Online', 'Offline', 'Okay', 'Hospital', 'In Torn', 'Travel', 'Abroad'].map(status => {
-                            const isActive = filters.statuses.includes(status);
-                            return (
-                              <button 
-                                key={status}
-                                onClick={() => {
-                                  setFilters(prev => ({
-                                    ...prev,
-                                    statuses: isActive ? prev.statuses.filter(s => s !== status) : [...prev.statuses, status]
-                                  }));
-                                }}
-                                className={`px-2 py-1 rounded-md text-[9px] font-bold transition-all border ${isActive ? 'bg-purple-500 border-purple-400 text-white' : 'bg-white/5 border-white/10 text-gray-500 hover:border-white/20'}`}
-                              >
-                                {status === 'Okay' ? 'Okay (Safe)' : status}
-                              </button>
-                            );
-                          })}
+                          {[
+                            { group: 'connectivity', items: ['Online', 'Offline'] },
+                            { group: 'location', items: ['In Torn', 'Travel', 'Abroad'] },
+                            { group: 'health', items: ['Okay', 'Hospital'] }
+                          ].map((cat) => (
+                            <div key={cat.group} className="flex flex-wrap gap-2 p-1.5 bg-white/[0.02] rounded-lg border border-white/5">
+                              {cat.items.map(status => {
+                                const isActive = filters.statuses.includes(status);
+                                return (
+                                  <button 
+                                    key={status}
+                                    onClick={() => {
+                                      setFilters(prev => {
+                                        let newStatuses = [...prev.statuses];
+                                        if (isActive) {
+                                          newStatuses = newStatuses.filter(s => s !== status);
+                                        } else {
+                                          // Remove others in same group
+                                          newStatuses = newStatuses.filter(s => !cat.items.includes(s));
+                                          newStatuses.push(status);
+                                        }
+                                        return { ...prev, statuses: newStatuses };
+                                      });
+                                    }}
+                                    className={`px-2 py-1 rounded-md text-[9px] font-bold transition-all border ${isActive ? 'bg-purple-500 border-purple-400 text-white' : 'bg-white/5 border-white/10 text-gray-500 hover:border-white/20'}`}
+                                  >
+                                    {status === 'Okay' ? 'Okay (Safe)' : status}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ))}
                         </div>
                       </div>
                     </div>
@@ -787,22 +850,37 @@ export default function App() {
                         // Status logic
                         if (filters.statuses.length === 0) return matchesLevel && matchesAge;
 
-                        const matchesStatus = filters.statuses.some(s => {
-                          if (s === 'Okay') {
-                            return seller.status.state === 'Okay' || (seller.status.state !== 'Hospital' && !seller.status.description.toLowerCase().includes('hospital'));
-                          }
-                          if (s === 'Online') return seller.last_action.status === 'Online';
-                          if (s === 'Offline') return seller.last_action.status === 'Offline';
-                          if (s === 'In Torn') {
-                            const simpleStatus = getSimpleStatus(seller.status);
-                            return simpleStatus !== 'Travel' && simpleStatus !== 'Abroad';
-                          }
-                          if (s === 'Travel') return getSimpleStatus(seller.status) === 'Travel';
-                          if (s === 'Abroad') return getSimpleStatus(seller.status) === 'Abroad';
-                          if (s === 'Hospital') return getSimpleStatus(seller.status) === 'Hospital';
-                          
-                          return seller.status.state.includes(s) || seller.status.description.includes(s);
-                        });
+                        const matchesStatus = filters.statuses.length === 0 || (() => {
+                          const statusGroups = [
+                            { name: 'connectivity', items: ['Online', 'Offline'] },
+                            { name: 'location', items: ['In Torn', 'Travel', 'Abroad'] },
+                            { name: 'health', items: ['Okay', 'Hospital'] }
+                          ];
+
+                          // Check each group that has a selection
+                          return statusGroups.every(group => {
+                            const selectedInGroup = filters.statuses.filter(s => group.items.includes(s));
+                            if (selectedInGroup.length === 0) return true; // No filter in this group, so it matches
+
+                            // Must match at least one selected item in this group (OR within group)
+                            return selectedInGroup.some(s => {
+                              if (s === 'Okay') {
+                                const simpleStatus = getSimpleStatus(seller.status);
+                                return simpleStatus !== 'Hospital';
+                              }
+                              if (s === 'Online') return seller.last_action.status === 'Online';
+                              if (s === 'Offline') return seller.last_action.status === 'Offline';
+                              if (s === 'In Torn') {
+                                const simpleStatus = getSimpleStatus(seller.status);
+                                return simpleStatus !== 'Travel' && simpleStatus !== 'Abroad';
+                              }
+                              if (s === 'Travel') return getSimpleStatus(seller.status) === 'Travel';
+                              if (s === 'Abroad') return getSimpleStatus(seller.status) === 'Abroad';
+                              if (s === 'Hospital') return getSimpleStatus(seller.status) === 'Hospital';
+                              return seller.status.state.includes(s) || seller.status.description.includes(s);
+                            });
+                          });
+                        })();
 
                         return matchesLevel && matchesAge && matchesStatus;
                       })
@@ -829,7 +907,7 @@ export default function App() {
                           >
                           <td className="px-4 py-3">
                             <div className="flex flex-col min-w-[120px]">
-                              <button onClick={() => window.open(`https://www.torn.com/profiles.php?XID=${listing.player_id}`, '_blank')} className="text-[11px] font-bold text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors text-left truncate max-w-[140px] group/name">
+                              <button onClick={() => window.open(`https://www.torn.com/bazaar.php?userId=${listing.player_id}#/`, '_blank')} className="text-[11px] font-bold text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors text-left truncate max-w-[140px] group/name">
                                 <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${seller?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : seller?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-700'}`} />
                                 <span className="truncate">{listing.player_name || `User#${listing.player_id}`}</span>
                               </button>
@@ -860,7 +938,7 @@ export default function App() {
                             </div>
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <a href={`https://www.torn.com/bazaar.php#/p=main&XID=${listing.player_id}`} target="_blank" className="inline-flex items-center gap-1 bg-purple-600/10 hover:bg-purple-600 text-purple-400 hover:text-white border border-purple-500/30 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg active:scale-95 group/buy">
+                            <a href={`https://www.torn.com/bazaar.php?userId=${listing.player_id}#/`} target="_blank" className="inline-flex items-center gap-1 bg-purple-600/10 hover:bg-purple-600 text-purple-400 hover:text-white border border-purple-500/30 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg active:scale-95 group/buy">
                               Buy Now <ArrowRightLeft className="w-3 h-3 group-hover/buy:translate-x-0.5 transition-transform" />
                             </a>
                           </td>
