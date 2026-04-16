@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Search, 
   User, 
@@ -88,6 +88,14 @@ export default function App() {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [alertsToShowCount, setAlertsToShowCount] = useState<number>(2);
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
+
+  const watchlistScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (watchlistScrollRef.current && selectedItems.length > 0) {
+      watchlistScrollRef.current.scrollTo({ left: watchlistScrollRef.current.scrollWidth, behavior: 'smooth' });
+    }
+  }, [selectedItems.length]);
 
   const [buyPrice, setBuyPrice] = useState<string>('');
   const [sellPrice, setSellPrice] = useState<string>('');
@@ -339,6 +347,7 @@ export default function App() {
         const itemInfo = allItems.find(it => it.id === id) || ITEMS_DATABASE.find(it => it.id === id);
         setSelectedItems(prev => [...prev, { id, name: data.item_name || itemInfo?.name || `Item ${id}` }].slice(-10));
       }
+      if (!isAuto) setActiveItemId(id);
       return data;
     } catch (err) {
       setError('Market fetch failed.');
@@ -621,36 +630,47 @@ export default function App() {
                  <ArrowRightLeft className="w-3 h-3 text-purple-500" />
                  <span className="text-[9px] font-black uppercase text-gray-600 tracking-widest">Active Watchlist</span>
                </div>
-               <div className="flex items-center gap-3 bg-black/40 p-2 rounded-xl border border-white/5 overflow-x-auto no-scrollbar">
+               <div ref={watchlistScrollRef} className="flex items-center gap-3 bg-black/40 p-2 rounded-xl border border-white/5 overflow-x-auto no-scrollbar scroll-smooth">
                 {selectedItems.map(item => (
-                  <div key={item.id} className="flex flex-col gap-1.5 shrink-0">
-                    <div className="flex items-center">
+                  <div 
+                    key={item.id} 
+                    className={`flex items-center gap-3 px-2 py-1.5 rounded-lg border transition-all shrink-0 ${activeItemId === item.id ? 'bg-white/10 border-white/20' : 'bg-transparent border-transparent grayscale opacity-60 hover:grayscale-0 hover:opacity-100 hover:bg-white/5'}`}
+                  >
+                    <div className="flex flex-col gap-1.5">
                       <button 
-                        onClick={() => setActiveItemId(item.id)} 
-                        className={`px-3 py-1 rounded-l-lg text-[10px] font-black transition-all border-y border-l whitespace-nowrap ${activeItemId === item.id ? 'bg-white text-black border-white' : 'bg-white/5 text-gray-400 border-white/5'}`}
+                        onClick={() => {
+                          setActiveItemId(item.id);
+                          fetchMarketData(item.id);
+                        }} 
+                        className="flex items-center gap-2 group/btn"
                       >
-                        {item.name}
+                        <img src={`https://www.torn.com/images/items/${item.id}/medium.png`} alt="" className="w-5 h-5 object-contain" referrerPolicy="no-referrer" />
+                        <span className={`text-[10px] font-black uppercase tracking-tight transition-colors ${activeItemId === item.id ? 'text-purple-300' : 'text-gray-400 group-hover/btn:text-gray-200'}`}>
+                          {item.name}
+                        </span>
                       </button>
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); toggleItem(item); }} 
-                        className={`px-2 py-1 rounded-r-lg border-y border-r transition-all group/close ${activeItemId === item.id ? 'bg-white/90 text-black border-white hover:bg-red-500 hover:text-white' : 'bg-white/10 text-gray-500 border-white/5 hover:text-red-400'}`}
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                      <div className="flex items-center gap-1.5 px-2 py-1 bg-purple-900/10 rounded-lg border border-purple-500/20 group hover:border-purple-500/40 transition-colors">
-                        <AlertCircle className={`w-2.5 h-2.5 ${alertPrices[item.id] ? 'text-purple-400' : 'text-purple-900'}`} />
+                      
+                      <div className="flex items-center gap-1.5 px-2 py-0.5 bg-black/40 rounded border border-white/5 focus-within:border-purple-500/30 transition-colors">
+                        <AlertCircle className={`w-2 h-2 ${alertPrices[item.id] ? 'text-purple-400' : 'text-gray-700'}`} />
                         <input 
                           type="text" 
-                          placeholder="Price Alert" 
+                          placeholder="Alert Price" 
                           value={formatDisplayValue(alertPrices[item.id] || '')} 
                           onChange={(e) => {
                             const parsed = parseNumericInput(e.target.value);
                             setAlertPrices(prev => ({ ...prev, [item.id]: parsed }));
                           }}
-                          className="w-16 bg-transparent text-[9px] font-mono text-white focus:outline-none placeholder:text-gray-600"
+                          className="w-20 bg-transparent text-[8px] font-mono text-white focus:outline-none placeholder:text-gray-800"
                         />
                       </div>
+                    </div>
+
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); toggleItem(item); }} 
+                      className="p-1 rounded-full hover:bg-red-500/20 text-gray-700 hover:text-red-400 transition-all self-start mt-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
                   </div>
                 ))}
               </div>
