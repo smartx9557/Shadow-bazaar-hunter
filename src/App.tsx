@@ -371,6 +371,17 @@ export default function App() {
     return 'text-white font-bold';
   };
 
+  const getSimpleStatus = (status?: { state: string, description: string }) => {
+    if (!status) return 'READY';
+    const state = status.state || 'Okay';
+    const desc = (status.description || '').toLowerCase();
+    
+    if (state === 'Hospital') return 'Hospital';
+    if (state === 'Travel' || desc.includes('travel')) return 'Travel';
+    if (state === 'Abroad' || desc.includes('abroad')) return 'Abroad';
+    return state;
+  };
+
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen bg-[#050505] text-white flex items-center justify-center p-4 selection:bg-purple-500/30">
@@ -413,9 +424,12 @@ export default function App() {
                 </button>
                 <div className="flex items-center gap-2 px-2 py-1 bg-white/5 rounded-lg border border-white/5 max-w-[150px] md:max-w-none">
                   <div className="flex flex-col items-end">
-                    <span className="text-[10px] font-bold truncate max-w-[80px]">{userProfile?.name}</span>
-                    <span className="text-[8px] text-purple-400 font-mono">
-                      {userProfile?.status?.state || 'SECURE'} • {userProfile?.status?.description || 'READY'}
+                    <div className="flex items-center gap-1.5">
+                      <div className={`w-1 h-1 rounded-full ${userProfile?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : userProfile?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-500'}`} />
+                      <span className="text-[10px] font-bold truncate max-w-[80px]">{userProfile?.name}</span>
+                    </div>
+                    <span className="text-[8px] text-purple-400 font-mono tracking-wider uppercase">
+                      {getSimpleStatus(userProfile?.status)}
                     </span>
                   </div>
                   <User className="w-3 h-3 text-purple-400 shrink-0" />
@@ -779,10 +793,13 @@ export default function App() {
                           }
                           if (s === 'Online') return seller.last_action.status === 'Online';
                           if (s === 'Offline') return seller.last_action.status === 'Offline';
-                          if (s === 'In Torn') return seller.status.description.includes('In Torn');
-                          if (s === 'Travel') return seller.status.state === 'Travel' || seller.status.description.toLowerCase().includes('travel');
-                          if (s === 'Abroad') return seller.status.state === 'Abroad' || seller.status.description.toLowerCase().includes('abroad') || seller.status.state === 'Travel';
-                          if (s === 'Hospital') return seller.status.state === 'Hospital';
+                          if (s === 'In Torn') {
+                            const simpleStatus = getSimpleStatus(seller.status);
+                            return simpleStatus !== 'Travel' && simpleStatus !== 'Abroad';
+                          }
+                          if (s === 'Travel') return getSimpleStatus(seller.status) === 'Travel';
+                          if (s === 'Abroad') return getSimpleStatus(seller.status) === 'Abroad';
+                          if (s === 'Hospital') return getSimpleStatus(seller.status) === 'Hospital';
                           
                           return seller.status.state.includes(s) || seller.status.description.includes(s);
                         });
@@ -824,7 +841,9 @@ export default function App() {
                                   <span className={getAgeColor(seller.age)}>{seller.age}D</span>
                                   <div className="flex items-center gap-1">
                                     <div className={`w-1 h-1 rounded-full ${seller.status.state === 'Okay' ? 'bg-green-500' : 'bg-red-500'}`} />
-                                    <span className={seller.status.state === 'Okay' ? 'text-green-500/80' : 'text-red-500/80'}>{seller.status.state}</span>
+                                    <span className={seller.status.state === 'Okay' ? 'text-green-500/80' : 'text-red-500/80'}>
+                                      {getSimpleStatus(seller.status)}
+                                    </span>
                                   </div>
                                 </div>
                               ) : (
