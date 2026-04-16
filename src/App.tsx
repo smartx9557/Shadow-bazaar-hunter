@@ -406,6 +406,32 @@ export default function App() {
     }
   };
 
+  const formatDisplayValue = (val: string) => {
+    if (!val) return '';
+    const clean = val.toString().replace(/,/g, '');
+    const num = parseFloat(clean);
+    if (isNaN(num)) return val;
+    const parts = clean.split('.');
+    const formatted = parseInt(parts[0]).toLocaleString('en-US');
+    return parts.length > 1 ? `${formatted}.${parts[1].slice(0, 2)}` : formatted;
+  };
+
+  const parseNumericInput = (val: string) => {
+    let clean = val.replace(/,/g, '').replace(/\s/g, '').toLowerCase();
+    
+    if (clean.endsWith('k') || clean.endsWith('m') || clean.endsWith('b')) {
+      const char = clean.slice(-1);
+      const multiplier = char === 'k' ? 1000 : char === 'm' ? 1000000 : 1000000000;
+      const num = parseFloat(clean.slice(0, -1));
+      return isNaN(num) ? '' : Math.floor(num * multiplier).toString();
+    }
+    
+    const numeric = clean.replace(/[^0-9.]/g, '');
+    const parts = numeric.split('.');
+    if (parts.length > 2) return `${parts[0]}.${parts[1]}`;
+    return numeric;
+  };
+
   const calculateProfit = () => {
     const buy = parseFloat(buyPrice) || 0;
     const sell = parseFloat(sellPrice) || 0;
@@ -612,16 +638,19 @@ export default function App() {
                         <X className="w-3 h-3" />
                       </button>
                     </div>
-                    <div className="flex items-center gap-1.5 px-2 py-1 bg-purple-900/10 rounded-lg border border-purple-500/20 group hover:border-purple-500/40 transition-colors">
-                      <AlertCircle className={`w-2.5 h-2.5 ${alertPrices[item.id] ? 'text-purple-400' : 'text-purple-900'}`} />
-                      <input 
-                        type="number" 
-                        placeholder="Price Alert" 
-                        value={alertPrices[item.id] || ''} 
-                        onChange={(e) => setAlertPrices(prev => ({ ...prev, [item.id]: e.target.value }))}
-                        className="w-16 bg-transparent text-[9px] font-mono text-white focus:outline-none placeholder:text-gray-600"
-                      />
-                    </div>
+                      <div className="flex items-center gap-1.5 px-2 py-1 bg-purple-900/10 rounded-lg border border-purple-500/20 group hover:border-purple-500/40 transition-colors">
+                        <AlertCircle className={`w-2.5 h-2.5 ${alertPrices[item.id] ? 'text-purple-400' : 'text-purple-900'}`} />
+                        <input 
+                          type="text" 
+                          placeholder="Price Alert" 
+                          value={formatDisplayValue(alertPrices[item.id] || '')} 
+                          onChange={(e) => {
+                            const parsed = parseNumericInput(e.target.value);
+                            setAlertPrices(prev => ({ ...prev, [item.id]: parsed }));
+                          }}
+                          className="w-16 bg-transparent text-[9px] font-mono text-white focus:outline-none placeholder:text-gray-600"
+                        />
+                      </div>
                   </div>
                 ))}
               </div>
@@ -636,15 +665,15 @@ export default function App() {
             <div className="grid grid-cols-3 gap-2">
               <div className="bg-purple-900/10 border border-purple-500/20 p-3 rounded-xl flex flex-col justify-center">
                 <span className="text-[8px] text-purple-400 font-bold uppercase truncate">Lowest Point</span>
-                <div className="text-sm font-black text-white">${(marketData.listings[0]?.price || 0).toLocaleString()}</div>
+                <div className="text-sm font-black text-white">${(marketData.listings[0]?.price || 0).toLocaleString('en-US')}</div>
               </div>
               <div className="bg-[#121212] border border-white/5 p-3 rounded-xl flex flex-col justify-center">
                  <span className="text-[8px] text-gray-500 font-bold uppercase truncate">Bazaar Avg</span>
-                 <div className="text-sm font-black">${marketData.bazaar_average.toLocaleString()}</div>
+                 <div className="text-sm font-black">${marketData.bazaar_average.toLocaleString('en-US')}</div>
               </div>
               <div className="bg-[#121212] border border-white/5 p-3 rounded-xl flex flex-col justify-center text-right pr-4">
                  <span className="text-[8px] text-gray-500 font-bold uppercase truncate">Total Stock</span>
-                 <div className="text-sm font-black">{marketData.total_listings.toLocaleString()}</div>
+                 <div className="text-sm font-black">{marketData.total_listings.toLocaleString('en-US')}</div>
               </div>
             </div>
 
@@ -720,16 +749,22 @@ export default function App() {
                           <span className="text-[10px] font-black uppercase text-gray-500">User Level</span>
                           <div className="flex items-center gap-1">
                             <input 
-                              type="number" 
-                              value={filters.minLevel} 
-                              onChange={(e) => setFilters(prev => ({ ...prev, minLevel: Math.max(0, parseInt(e.target.value) || 0) }))}
+                              type="text" 
+                              value={formatDisplayValue(filters.minLevel.toString())} 
+                              onChange={(e) => {
+                                const val = parseNumericInput(e.target.value);
+                                setFilters(prev => ({ ...prev, minLevel: parseInt(val) || 0 }));
+                              }}
                               className="w-10 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] font-mono text-purple-400 focus:outline-none focus:border-purple-500"
                             />
                             <span className="text-gray-700 text-[10px]">-</span>
                             <input 
-                              type="number" 
-                              value={filters.maxLevel} 
-                              onChange={(e) => setFilters(prev => ({ ...prev, maxLevel: Math.max(0, parseInt(e.target.value) || 0) }))}
+                              type="text" 
+                              value={formatDisplayValue(filters.maxLevel.toString())} 
+                              onChange={(e) => {
+                                const val = parseNumericInput(e.target.value);
+                                setFilters(prev => ({ ...prev, maxLevel: parseInt(val) || 0 }));
+                              }}
                               className="w-10 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] font-mono text-purple-400 focus:outline-none focus:border-purple-500"
                             />
                           </div>
@@ -742,16 +777,22 @@ export default function App() {
                           <span className="text-[10px] font-black uppercase text-gray-500">Account Age (Days)</span>
                           <div className="flex items-center gap-1">
                             <input 
-                              type="number" 
-                              value={filters.minAge} 
-                              onChange={(e) => setFilters(prev => ({ ...prev, minAge: Math.max(0, parseInt(e.target.value) || 0) }))}
+                              type="text" 
+                              value={formatDisplayValue(filters.minAge.toString())} 
+                              onChange={(e) => {
+                                const val = parseNumericInput(e.target.value);
+                                setFilters(prev => ({ ...prev, minAge: parseInt(val) || 0 }));
+                              }}
                               className="w-14 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] font-mono text-purple-400 focus:outline-none focus:border-purple-500"
                             />
                             <span className="text-gray-700 text-[10px]">-</span>
                             <input 
-                              type="number" 
-                              value={filters.maxAge} 
-                              onChange={(e) => setFilters(prev => ({ ...prev, maxAge: Math.max(0, parseInt(e.target.value) || 0) }))}
+                              type="text" 
+                              value={formatDisplayValue(filters.maxAge.toString())} 
+                              onChange={(e) => {
+                                const val = parseNumericInput(e.target.value);
+                                setFilters(prev => ({ ...prev, maxAge: parseInt(val) || 0 }));
+                              }}
                               className="w-14 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[10px] font-mono text-purple-400 focus:outline-none focus:border-purple-500"
                             />
                           </div>
@@ -916,7 +957,7 @@ export default function App() {
                                 <div className="flex items-center gap-2 mt-1 whitespace-nowrap overflow-x-auto no-scrollbar text-[9px]">
                                   <span className="text-purple-500/80 font-black">ID:{listing.player_id}</span>
                                   <span className="text-blue-400/80 font-bold">L:{seller.level}</span>
-                                  <span className={getAgeColor(seller.age)}>{seller.age}D</span>
+                                  <span className={getAgeColor(seller.age)}>{seller.age.toLocaleString('en-US')}D</span>
                                   <div className="flex items-center gap-1">
                                     <div className={`w-1 h-1 rounded-full ${seller.status.state === 'Okay' ? 'bg-green-500' : 'bg-red-500'}`} />
                                     <span className={seller.status.state === 'Okay' ? 'text-green-500/80' : 'text-red-500/80'}>
@@ -933,8 +974,8 @@ export default function App() {
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex flex-col">
-                              <span className={`text-[11px] font-black ${index === 0 ? 'text-purple-300' : 'text-white'}`}>${listing.price.toLocaleString()}</span>
-                              <span className="text-[9px] font-bold text-gray-600">{listing.quantity.toLocaleString()} UNITS</span>
+                              <span className={`text-[11px] font-black ${index === 0 ? 'text-purple-300' : 'text-white'}`}>${listing.price.toLocaleString('en-US')}</span>
+                              <span className="text-[9px] font-bold text-gray-600">{listing.quantity.toLocaleString('en-US')} UNITS</span>
                             </div>
                           </td>
                           <td className="px-4 py-3 text-right">
@@ -960,16 +1001,16 @@ export default function App() {
                  <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <label className="text-[8px] text-gray-600 uppercase font-bold pl-1">In</label>
-                      <input type="number" value={buyPrice} onChange={(e) => setBuyPrice(e.target.value)} placeholder="0" className="w-full bg-black border border-white/5 rounded-lg py-2 px-3 text-xs font-mono" />
+                      <input type="text" value={formatDisplayValue(buyPrice)} onChange={(e) => setBuyPrice(parseNumericInput(e.target.value))} placeholder="0" className="w-full bg-black border border-white/5 rounded-lg py-2 px-3 text-xs font-mono" />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[8px] text-gray-600 uppercase font-bold pl-1">Out</label>
-                      <input type="number" value={sellPrice} onChange={(e) => setSellPrice(e.target.value)} placeholder="0" className="w-full bg-black border border-white/5 rounded-lg py-2 px-3 text-xs font-mono" />
+                      <input type="text" value={formatDisplayValue(sellPrice)} onChange={(e) => setSellPrice(parseNumericInput(e.target.value))} placeholder="0" className="w-full bg-black border border-white/5 rounded-lg py-2 px-3 text-xs font-mono" />
                     </div>
                  </div>
                  <div className="mt-3 pt-3 border-t border-white/5 flex items-center justify-between">
                     <span className="text-[10px] font-bold text-gray-500 uppercase">Delta</span>
-                    <span className={`text-xs font-black font-mono ${calculateProfit() >= 0 ? 'text-green-400' : 'text-red-400'}`}>${calculateProfit().toLocaleString()}</span>
+                    <span className={`text-xs font-black font-mono ${calculateProfit() >= 0 ? 'text-green-400' : 'text-red-400'}`}>${calculateProfit().toLocaleString('en-US')}</span>
                  </div>
               </div>
 
