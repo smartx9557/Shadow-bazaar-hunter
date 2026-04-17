@@ -387,10 +387,36 @@ export default function App() {
     return (num / 1000000000).toFixed(1).replace(/\.0$/, '') + 'B';
   };
 
-  const getDestination = (desc: string) => {
+  const getAbbreviatedLocation = (desc: string) => {
     if (!desc) return '';
+    const d = desc.toLowerCase();
+    
+    // Check for returning to Torn
+    if (d.includes('returning to torn')) return 'TORN';
+    
+    // Extract location name
     const matches = desc.match(/(?:In|Traveling to) ([^.,]+)/i);
-    return matches ? matches[1].trim() : '';
+    const location = matches ? matches[1].trim() : '';
+    
+    if (!location) return '';
+    
+    // Mapping for abbreviations
+    const mapping: Record<string, string> = {
+      'United Kingdom': 'UK',
+      'South Africa': 'SA',
+      'UAE': 'UAE',
+      'Dubai': 'UAE',
+      'Cayman Islands': 'CAY',
+      'Switzerland': 'CH',
+      'Japan': 'JPN',
+      'China': 'CHN',
+      'Canada': 'CAN',
+      'Argentina': 'ARG',
+      'Mexico': 'MEX',
+      'Hawaii': 'HI'
+    };
+    
+    return mapping[location] || location.substring(0, 3).toUpperCase();
   };
 
   const fetchSellerProfile = async (sellerId: number, force = false) => {
@@ -1204,12 +1230,20 @@ export default function App() {
                                   <div className="flex items-center gap-1">
                                     <div className={`w-1 h-1 rounded-full ${seller.status.state === 'Okay' ? 'bg-green-500' : 'bg-red-500'}`} />
                                     <span className={seller.status.state === 'Okay' ? 'text-green-500/80' : 'text-red-500/80'}>
-                                      {getSimpleStatus(seller.status)}
-                                      {(seller.status.state === 'Travel' || seller.status.state === 'Abroad') && (
-                                        <span className="ml-1 text-[8.5px] text-blue-300 font-black">
-                                          {getDestination(seller.status.description)}
-                                        </span>
-                                      )}
+                                      {(() => {
+                                        const sStatus = getSimpleStatus(seller.status);
+                                        const location = getAbbreviatedLocation(seller.status.description);
+                                        return (
+                                          <>
+                                            {sStatus}
+                                            {(sStatus === 'Travel' || sStatus === 'Abroad') && location && (
+                                              <span className="ml-1 text-[8.5px] text-blue-300 font-black px-1 bg-blue-500/10 rounded border border-blue-500/20">
+                                                {location}
+                                              </span>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
                                     </span>
                                     {seller.status.until > 0 && (
                                       <span className="text-[7px] text-red-400 font-mono ml-0.5">
@@ -1233,8 +1267,32 @@ export default function App() {
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex flex-col">
-                              <span className={`text-[11px] font-black ${index === 0 ? 'text-purple-300' : 'text-white'}`}>${listing.price.toLocaleString('en-US')}</span>
-                              <span className="text-[9px] font-bold text-gray-600">{listing.quantity.toLocaleString('en-US')} UNITS</span>
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[11px] font-black ${index === 0 ? 'text-purple-300' : 'text-white'}`}>
+                                  ${listing.price.toLocaleString('en-US')}
+                                </span>
+                                {marketData?.market_price && (
+                                  <span className={`text-[8px] font-black font-mono transition-colors ${(marketData.market_price - listing.price) > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                    {(marketData.market_price - listing.price) >= 0 ? '+' : ''}
+                                    ${formatCompactNumber(marketData.market_price - listing.price)}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex flex-col mt-0.5 opacity-60">
+                                <span className="text-[7.5px] font-mono text-gray-500 uppercase leading-none">Stack: ${formatCompactNumber(listing.price * listing.quantity)}</span>
+                                {marketData?.market_price && (
+                                  <span className={`text-[7.5px] font-mono font-bold uppercase leading-none mt-0.5 ${(marketData.market_price - listing.price) > 0 ? 'text-green-500/80' : 'text-red-500/80'}`}>
+                                    Profit: ${(marketData.market_price - listing.price) >= 0 ? '+' : ''}
+                                    {formatCompactNumber((marketData.market_price - listing.price) * listing.quantity)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-col">
+                              <span className="text-[11px] font-black text-gray-400">{listing.quantity.toLocaleString('en-US')}</span>
+                              <span className="text-[8px] font-bold text-gray-600 uppercase tracking-tighter">UNITS</span>
                             </div>
                           </td>
                           <td className="px-4 py-3 text-right">
