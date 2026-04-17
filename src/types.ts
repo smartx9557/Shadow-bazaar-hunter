@@ -45,3 +45,14 @@ export interface SelectedItem {
   id: string;
   name: string;
 }
+
+export interface TargetUser extends EnrichedSeller {
+  last_updated?: number;
+  bazaar?: {
+    ID: number;
+    name: string;
+    quantity: number;
+    price: number;
+    market_price?: number;
+  }[];
+}

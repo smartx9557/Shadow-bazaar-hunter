@@ -22,14 +22,21 @@ import {
   AlertCircle,
   Plus,
   X,
+  Target,
+  Users,
+  Crosshair,
   ChevronDown,
   Info,
   SlidersHorizontal,
   Filter,
-  Check
+  Check,
+  Copy,
+  Swords,
+  Clock,
+  Store
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { MarketplaceData, TornProfile, EnrichedSeller, MarketplaceListing, SelectedItem } from './types';
+import { MarketplaceData, TornProfile, EnrichedSeller, MarketplaceListing, SelectedItem, TargetUser } from './types';
 
 // Constants
 const REFRESH_INTERVAL = 30000; // 30 seconds
@@ -134,6 +141,46 @@ export default function App() {
   const [buyPrice, setBuyPrice] = useState<string>('');
   const [sellPrice, setSellPrice] = useState<string>('');
   
+  // Toast State
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const copyToClipboard = (text: string, label: string = 'Copied') => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast(`${label}: ${text}`);
+      }).catch(err => {
+        console.error('Failed to copy: ', err);
+      });
+    } else {
+      // Fallback
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        showToast(`${label}: ${text}`);
+      } catch (err) {
+        console.error('Fallback: Oops, unable to copy', err);
+      }
+      document.body.removeChild(textArea);
+    }
+  };
+
+  // Target List State
+  const [targetUsers, setTargetUsers] = useState<TargetUser[]>(() => {
+    const saved = localStorage.getItem('shadow_target_list');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [isTargetListOpen, setIsTargetListOpen] = useState<boolean>(false);
+  const [activeTargetId, setActiveTargetId] = useState<number | null>(null);
+  const [targetInputId, setTargetInputId] = useState<string>('');
+
   // Filter state
   const [showFilters, setShowFilters] = useState<boolean>(false);
   const [filters, setFilters] = useState({
@@ -154,11 +201,18 @@ export default function App() {
     });
   };
 
-  // Audio initialization
+  // Target synchronization cycle (refresh every 30s)
   useEffect(() => {
-    audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-    audioRef.current.loop = true;
-  }, []);
+    if (!apiKey || targetUsers.length === 0) return;
+
+    const interval = setInterval(() => {
+      targetUsers.forEach(user => {
+         fetchTargetData(user.player_id);
+      });
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [apiKey, targetUsers.length]);
 
   useEffect(() => {
     localStorage.setItem('shadow_alert_prices', JSON.stringify(alertPrices));
@@ -418,6 +472,71 @@ export default function App() {
     
     return mapping[location] || location.substring(0, 3).toUpperCase();
   };
+
+  const fetchTargetData = async (userId: number) => {
+    try {
+      const resp = await fetch(`${TORN_API_BASE}/user/${userId}?selections=profile,personalstats,bazaar&key=${apiKey}&ts=${Math.floor(Date.now() / 10000)}`);
+      const data = await resp.json();
+      if (!data.error) {
+        const enriched: TargetUser = { 
+          ...data, 
+          seller_id: userId, 
+          player_id: userId,
+          last_updated: Date.now()
+        };
+        setTargetUsers(prev => {
+          const filtered = prev.filter(u => u.player_id !== userId);
+          const next = [enriched, ...filtered];
+          localStorage.setItem('shadow_target_list', JSON.stringify(next));
+          return next;
+        });
+      }
+      return data;
+    } catch (e) {
+      return { error: { error: 'Network failure' } };
+    }
+  };
+
+  const addTarget = async () => {
+    const id = parseInt(targetInputId);
+    if (!id || isNaN(id)) return;
+    
+    // Check if duplicate
+    if (targetUsers.some(u => u.player_id === id)) {
+      setTargetInputId('');
+      return;
+    }
+
+    const data = await fetchTargetData(id);
+    if (data.error) {
+      setError(`Failed to add target: ${data.error.error}`);
+    } else {
+      setTargetInputId('');
+    }
+  };
+
+  const removeTarget = (id: number) => {
+    setTargetUsers(prev => {
+      const next = prev.filter(u => u.player_id !== id);
+      localStorage.setItem('shadow_target_list', JSON.stringify(next));
+      return next;
+    });
+    if (activeTargetId === id) setActiveTargetId(null);
+  };
+
+  const refreshAllTargets = async () => {
+    if (!isLoggedIn || !apiKey) return;
+    for (const u of targetUsers) {
+      await fetchTargetData(u.player_id);
+    }
+  };
+
+  useEffect(() => {
+    if (isTargetListOpen) {
+      const interval = setInterval(refreshAllTargets, 60000); // refresh every min when open
+      return () => clearInterval(interval);
+    }
+  }, [isTargetListOpen, targetUsers.length]);
 
   const fetchSellerProfile = async (sellerId: number, force = false) => {
     if (sellerDetails[sellerId] && !force) return;
@@ -1185,17 +1304,29 @@ export default function App() {
                           <td className="px-4 py-3">
                             <div className="flex flex-col min-w-[150px]">
                               <div className="flex items-center gap-2">
-                                <button onClick={() => window.open(`https://www.torn.com/profiles.php?XID=${listing.player_id}`, '_blank')} className="text-[11px] font-bold text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors text-left truncate max-w-[140px] group/name">
-                                  <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${seller?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : seller?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-700'}`} />
-                                  <div className="flex flex-col">
-                                    <span className="truncate">{listing.player_name || `User#${listing.player_id}`}</span>
-                                    {seller?.personalstats?.networth && (
-                                      <span className="text-[8px] text-gray-500 font-mono mt-[-2px]">
-                                        [{formatCompactNumber(seller.personalstats.networth)}]
+                                <div className="flex items-center gap-1.5 transition-colors text-left truncate max-w-[160px]">
+                                  <button onClick={() => window.open(`https://www.torn.com/profiles.php?XID=${listing.player_id}`, '_blank')} className="flex items-center gap-1.5 group/link text-left">
+                                    <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${seller?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : seller?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-700'}`} />
+                                    <div className="flex flex-col">
+                                      <span className="text-[11px] font-bold text-purple-300 group-hover/link:text-white truncate transition-colors">
+                                        {listing.player_name || `User#${listing.player_id}`}
                                       </span>
-                                    )}
-                                  </div>
-                                </button>
+                                      {seller?.personalstats?.networth && (
+                                        <span className="text-[8px] text-gray-500 font-mono mt-[-2px]">
+                                          [{formatCompactNumber(seller.personalstats.networth)}]
+                                        </span>
+                                      )}
+                                    </div>
+                                  </button>
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); copyToClipboard(listing.player_id.toString(), 'User ID'); }}
+                                    className="bg-white/5 px-1 rounded border border-white/10 text-[7px] text-gray-500 hover:text-purple-300 hover:border-purple-500/30 transition-all flex items-center gap-1 group/id"
+                                    title="Click to copy ID"
+                                  >
+                                    ID:{listing.player_id}
+                                    <Copy className="w-1.5 h-1.5 opacity-50 group-hover:opacity-100" />
+                                  </button>
+                                </div>
                                 <button 
                                   onClick={() => refreshSpecificBazaar(listing.player_id, activeItemId)}
                                   disabled={rowRefreshing[listing.player_id]}
@@ -1348,6 +1479,364 @@ export default function App() {
       <footer className="max-w-7xl mx-auto p-6 text-center border-t border-white/5 opacity-30 mt-8">
         <div className="text-[8px] font-mono uppercase tracking-[0.3em]">Shadow Bazaar Protocol // Node: {(activeItemId || 'null').substring(0,6)} // UTC: {new Date().toISOString().split('T')[0]}</div>
       </footer>
+
+      {/* Target List Floating Toggle */}
+      <button 
+        onClick={() => setIsTargetListOpen(true)}
+        className="fixed bottom-6 right-6 w-14 h-14 bg-purple-600 shadow-[0_0_20px_rgba(147,51,234,0.4)] rounded-full flex items-center justify-center text-white z-[60] active:scale-90 transition-transform hover:rotate-12 group"
+        title="Open Target List"
+      >
+        <div className="relative">
+          <Target className="w-6 h-6 group-hover:scale-110 transition-transform" />
+          {targetUsers.length > 0 && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-purple-600 text-[8px] flex items-center justify-center font-black">
+              {targetUsers.length}
+            </span>
+          )}
+        </div>
+      </button>
+
+      {/* Target List Sidebar */}
+      <AnimatePresence>
+        {isTargetListOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsTargetListOpen(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100]"
+            />
+            <motion.div 
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed inset-y-0 right-0 w-full max-w-sm bg-[#0a0a0a] border-l border-white/10 z-[101] shadow-2xl flex flex-col"
+            >
+              <div className="p-4 border-b border-white/10 flex items-center justify-between bg-black/40">
+                <div className="flex items-center gap-2">
+                  <Crosshair className="w-4 h-4 text-purple-500" />
+                  <h2 className="text-xs font-black uppercase tracking-widest text-white">Target Intelligence</h2>
+                </div>
+                <button onClick={() => setIsTargetListOpen(false)} className="p-2 hover:bg-white/5 rounded-lg text-gray-500 hover:text-white transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-4 bg-white/[0.02] border-b border-white/5">
+                <div className="flex gap-2">
+                  <div className="flex-1 relative">
+                    <input 
+                      type="text" 
+                      value={targetInputId}
+                      onChange={(e) => setTargetInputId(e.target.value)}
+                      placeholder="ENTER TARGET USER ID"
+                      className="w-full bg-black border border-white/10 rounded-lg py-2 px-3 text-[10px] font-mono text-purple-300 focus:border-purple-500 focus:outline-none placeholder:text-gray-800"
+                    />
+                  </div>
+                  <button 
+                    onClick={addTarget}
+                    className="p-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-white transition-all shadow-lg active:scale-95"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar">
+                {activeTargetId === null ? (
+                  // List View
+                  targetUsers.length > 0 ? (
+                    targetUsers.map(user => {
+                      const simpleStatus = getSimpleStatus(user.status);
+                      const location = getAbbreviatedLocation(user.status.description);
+                      return (
+                        <motion.div 
+                          layout
+                          key={user.player_id}
+                          className="bg-[#121212] border border-white/5 p-3 rounded-xl group hover:border-purple-500/30 transition-all cursor-pointer"
+                          onClick={() => setActiveTargetId(user.player_id)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="relative">
+                                <div className={`w-2.5 h-2.5 rounded-full border-2 border-[#121212] absolute -top-0.5 -left-0.5 z-10 ${user.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : user.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-600'}`} />
+                                <div className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center overflow-hidden border border-white/5 relative bg-purple-900/10">
+                                  <User className="w-5 h-5 text-purple-400/50" />
+                                </div>
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-[11px] font-black text-white group-hover:text-purple-300 transition-colors uppercase">{user.name}</span>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[8px] font-mono text-gray-500">ID:{user.player_id}</span>
+                                  {user.personalstats?.networth && (
+                                    <span className="text-[8px] font-mono text-purple-400 font-bold">[{formatCompactNumber(user.personalstats.networth)}]</span>
+                                  )}
+                                  {user.bazaar && user.bazaar.length > 0 && (() => {
+                                    const totalProfit = user.bazaar.reduce((acc, item) => {
+                                      const mp = item.market_price || (parseInt(activeItemId) === item.ID ? marketData?.market_price : null);
+                                      return acc + (mp ? (mp - item.price) * item.quantity : 0);
+                                    }, 0);
+                                    if (totalProfit === 0) return null;
+                                    return (
+                                      <div className={`px-1.5 py-0.5 rounded-sm flex items-center gap-1 border ${totalProfit >= 0 ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
+                                        <TrendingUp className="w-2 h-2" />
+                                        <span className="text-[7.5px] font-mono font-black">${formatCompactNumber(totalProfit)}</span>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end">
+                              <span className={`text-[8px] font-black uppercase ${user.status.state === 'Okay' ? 'text-green-500/70' : 'text-red-500/70'}`}>
+                                {simpleStatus} {location && `[${location}]`}
+                              </span>
+                              {user.status.until > 0 && (
+                                <span className="text-[7px] font-mono text-red-400">
+                                  {formatCountdown(user.status.until)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-800 opacity-20 py-12">
+                      <Users className="w-12 h-12 mb-3" />
+                      <p className="text-[10px] uppercase font-black tracking-[0.3em]">No Active Targets</p>
+                    </div>
+                  )
+                ) : (
+                  // Detail View
+                  (() => {
+                    const user = targetUsers.find(u => u.player_id === activeTargetId);
+                    if (!user) return null;
+                    const simpleStatus = getSimpleStatus(user.status);
+                    const location = getAbbreviatedLocation(user.status.description);
+
+                    return (
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.98 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="space-y-4"
+                      >
+                        <button 
+                          onClick={() => setActiveTargetId(null)}
+                          className="flex items-center gap-2 text-[9px] font-black text-gray-500 hover:text-white transition-colors mb-2"
+                        >
+                          <ChevronRight className="w-3 h-3 rotate-180" /> BACK TO LIST
+                        </button>
+
+                        <div className="bg-gradient-to-br from-purple-600/20 to-transparent border border-purple-500/20 p-4 rounded-2xl relative overflow-hidden">
+                          <div className="absolute top-0 right-0 p-2 text-[7px] font-mono text-purple-500/40 uppercase tracking-widest whitespace-nowrap">
+                            Target Intelligence // {user.last_action?.relative || 'N/A'}
+                          </div>
+                          
+                          <div className="relative z-10 flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                              <div className="w-14 h-14 rounded-xl bg-black/40 border border-white/10 flex items-center justify-center overflow-hidden">
+                                <User className="w-8 h-8 text-purple-400" />
+                              </div>
+                              <div className="flex flex-col">
+                                <h3 className="text-lg font-black tracking-tighter text-white">{user.name}</h3>
+                                <div className="flex items-center gap-2 mt-0.5">
+                                  <button 
+                                    onClick={() => copyToClipboard(user.player_id.toString(), 'User ID')}
+                                    className="text-[10px] text-gray-500 font-mono hover:text-purple-300 transition-colors flex items-center gap-1"
+                                  >
+                                    ID:{user.player_id} <Copy className="w-2.5 h-2.5" />
+                                  </button>
+                                  <span className="text-[10px] text-blue-400 font-bold">Level {user.level}</span>
+                                  <span className={`text-[10px] font-bold ${getAgeColor(user.age)}`}>{user.age.toLocaleString()}D</span>
+                                </div>
+                              </div>
+                            </div>
+                             <div className="flex gap-2">
+                               <button 
+                                 onClick={() => fetchTargetData(user.player_id)}
+                                 className="p-2 bg-purple-500/10 text-purple-400 hover:bg-purple-500 hover:text-white rounded-lg transition-all"
+                                 title="Manual Sync"
+                               >
+                                 <RefreshCw className="w-3.5 h-3.5" />
+                               </button>
+                               <button 
+                                 onClick={() => removeTarget(user.player_id)}
+                                 className="p-2 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-all"
+                               >
+                                 <X className="w-3.5 h-3.5" />
+                               </button>
+                             </div>
+                          </div>
+
+                          {/* Quick Actions */}
+                          <div className="flex gap-2 mt-4 relative z-10">
+                            {[
+                              { label: 'Profile', icon: User, url: `https://www.torn.com/profiles.php?XID=${user.player_id}`, color: 'bg-purple-500/10 border-purple-500/20 text-purple-400' },
+                              { label: 'Bazaar', icon: Store, url: `https://www.torn.com/bazaar.php?userId=${user.player_id}#/`, color: 'bg-blue-500/10 border-blue-500/20 text-blue-400' },
+                              { label: 'Attack', icon: Swords, url: `https://www.torn.com/loader.php?sid=attack&user2ID=${user.player_id}`, color: 'bg-red-500/10 border-red-500/20 text-red-400' }
+                            ].map((btn, i) => (
+                              <button 
+                                key={i}
+                                onClick={() => window.open(btn.url, '_blank')}
+                                className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg border text-[9px] font-black uppercase transition-all active:scale-95 hover:brightness-125 ${btn.color}`}
+                              >
+                                <btn.icon className="w-3 h-3" /> {btn.label}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="mt-4 grid grid-cols-2 gap-2 relative z-10">
+                            <div className="bg-black/40 p-2 rounded-lg border border-white/5">
+                              <span className="text-[8px] text-gray-500 uppercase font-black block mb-1 flex items-center gap-1">
+                                <Clock className="w-2 h-2" /> Activity
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <div className={`w-1.5 h-1.5 rounded-full ${user.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : user.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-600'}`} />
+                                <span className={`text-[9px] font-black uppercase ${user.last_action?.status === 'Online' ? 'text-green-400' : 'text-gray-400'}`}>
+                                  {user.last_action?.status} // {user.last_action?.relative}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="bg-black/40 p-2 rounded-lg border border-white/5">
+                              <span className="text-[8px] text-gray-500 uppercase font-black block mb-1">Status</span>
+                              <div className="flex items-center gap-1.5">
+                                <div className={`w-1.5 h-1.5 rounded-full ${user.status.state === 'Okay' ? 'bg-green-500' : 'bg-red-500'}`} />
+                                <span className={`text-[9px] font-black uppercase ${user.status.state === 'Okay' ? 'text-green-400' : 'text-red-400'} truncate`}>
+                                  {simpleStatus} {location && `(${location})`}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Bazaar Metrics Summary */}
+                        {user.bazaar && user.bazaar.length > 0 && (
+                          <div className="grid grid-cols-2 gap-2">
+                             <div className="bg-green-500/5 border border-green-500/10 p-3 rounded-xl flex flex-col items-center">
+                                <span className="text-[7.5px] font-black text-green-500/60 uppercase mb-1">Total Stock Value</span>
+                                <span className="text-xs font-black text-green-400">
+                                  ${formatCompactNumber(user.bazaar.reduce((acc, item) => acc + (item.price * item.quantity), 0))}
+                                </span>
+                             </div>
+                             <div className="bg-purple-500/5 border border-purple-500/10 p-3 rounded-xl flex flex-col items-center">
+                                <span className="text-[7.5px] font-black text-purple-500/60 uppercase mb-1">Bazaar Profit</span>
+                                <span className={`text-xs font-black ${(() => {
+                                  const totalProfit = user.bazaar.reduce((acc, item) => {
+                                    const mp = item.market_price || (parseInt(activeItemId) === item.ID ? marketData?.market_price : null);
+                                    return acc + (mp ? (mp - item.price) * item.quantity : 0);
+                                  }, 0);
+                                  return totalProfit >= 0 ? 'text-green-400' : 'text-red-400';
+                                })()}`}>
+                                  ${formatCompactNumber(user.bazaar.reduce((acc, item) => {
+                                    const mp = item.market_price || (parseInt(activeItemId) === item.ID ? marketData?.market_price : null);
+                                    return acc + (mp ? (mp - item.price) * item.quantity : 0);
+                                  }, 0))}
+                                </span>
+                             </div>
+                          </div>
+                        )}
+
+                        <div className="space-y-2">
+                          <h4 className="text-[10px] font-black text-gray-500 uppercase flex items-center justify-between">
+                             <div className="flex items-center gap-2">
+                               <TrendingUp className="w-3 h-3" /> Bazaar Node Analysis
+                             </div>
+                             {user.last_updated && (
+                               <div className="flex items-center gap-1 text-[8px] opacity-40 lowercase">
+                                 <Clock className="w-2 h-2" />
+                                 {Math.floor((Date.now() - user.last_updated) / 1000)}s ago
+                               </div>
+                             )}
+                          </h4>
+                          <div className="space-y-2">
+                            {user.bazaar && user.bazaar.length > 0 ? (
+                              [...user.bazaar]
+                                .sort((a, b) => {
+                                  const mpA = a.market_price || (parseInt(activeItemId) === a.ID ? marketData?.market_price : null);
+                                  const mpB = b.market_price || (parseInt(activeItemId) === b.ID ? marketData?.market_price : null);
+                                  const profitA = mpA ? (mpA - a.price) * a.quantity : 0;
+                                  const profitB = mpB ? (mpB - b.price) * b.quantity : 0;
+                                  return profitB - profitA;
+                                })
+                                .map((item, idx) => {
+                                // Attempt to find market price match from item details OR marketData
+                                const mp = item.market_price || (parseInt(activeItemId) === item.ID ? marketData?.market_price : null);
+                                const profitPerUnit = mp ? mp - item.price : 0;
+                                
+                                return (
+                                  <div key={idx} className="bg-[#121212] border border-white/5 p-2 rounded-lg flex items-center justify-between group hover:bg-white/5 hover:border-white/10 transition-all">
+                                    <div className="flex items-center gap-3">
+                                       <div className="w-10 h-10 rounded-lg bg-black/60 border border-white/10 flex items-center justify-center p-1.5 shrink-0">
+                                         <img src={`https://www.torn.com/images/items/${item.ID}/medium.png`} alt="" className="max-w-full max-h-full object-contain" referrerPolicy="no-referrer" />
+                                       </div>
+                                       <div className="flex flex-col">
+                                         <div className="flex items-center gap-1.5">
+                                           <span className="text-[10px] font-bold text-gray-200 uppercase tracking-tight">{item.name}</span>
+                                           {mp && (
+                                             <span className="text-[8px] px-1 bg-white/5 border border-white/5 rounded text-gray-500 font-mono">
+                                               MV: ${formatCompactNumber(mp)}
+                                             </span>
+                                           )}
+                                         </div>
+                                         <span className="text-[8px] text-gray-600 font-mono font-bold">x{item.quantity.toLocaleString()}</span>
+                                       </div>
+                                    </div>
+                                    <div className="text-right flex flex-col items-end">
+                                       <div className="flex items-center gap-1.5">
+                                          <span className="text-[10px] font-black text-purple-400">${item.price.toLocaleString()}</span>
+                                          {mp && (
+                                            <span className={`text-[8px] font-mono font-black ${profitPerUnit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                              {profitPerUnit >= 0 ? '+' : ''}{formatCompactNumber(profitPerUnit)}
+                                            </span>
+                                          )}
+                                       </div>
+                                       <span className="text-[7.5px] text-gray-600 font-mono tracking-tighter uppercase">Val: ${formatCompactNumber(item.price * item.quantity)}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })
+                            ) : (
+                              <div className="p-8 text-center bg-white/[0.01] border border-white/5 border-dashed rounded-xl">
+                                <Package className="w-6 h-6 text-gray-800 mx-auto mb-2 opacity-20" />
+                                <p className="text-[9px] font-mono text-gray-700 uppercase">No active bazaar nodes</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="p-3 bg-purple-500/5 border border-purple-500/10 rounded-xl">
+                           <p className="text-[8px] text-gray-600 italic leading-tight text-center">Bazaar data is snapshot-based. Prices and quantities may change rapidly. External redirects verify current inventory.</p>
+                        </div>
+                      </motion.div>
+                    );
+                  })()
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {toast && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            className={`fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 rounded-full border shadow-2xl flex items-center gap-2 ${
+              toast.type === 'error' ? 'bg-red-500/20 border-red-500/40 text-red-200' : 
+              toast.type === 'info' ? 'bg-blue-500/20 border-blue-500/40 text-blue-200' :
+              'bg-purple-900/40 border-purple-500/40 text-purple-200'
+            }`}
+          >
+            <div className={`w-1.5 h-1.5 rounded-full ${toast.type === 'error' ? 'bg-red-400' : toast.type === 'info' ? 'bg-blue-400' : 'bg-purple-400'} animate-pulse`} />
+            <span className="text-[10px] font-black uppercase tracking-widest">{toast.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <style dangerouslySetInnerHTML={{ __html: `
         .no-scrollbar::-webkit-scrollbar { display: none; }
