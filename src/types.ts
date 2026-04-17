@@ -27,9 +27,14 @@ export interface TornProfile {
     description: string;
     state: string;
     color: string;
+    until: number;
   };
   age: number;
   gender: string;
+  revivable: number;
+  personalstats?: {
+    networth?: number;
+  };
 }
 
 export interface EnrichedSeller extends TornProfile {

@@ -96,10 +96,34 @@ export default function App() {
   const [triggeredAlerts, setTriggeredAlerts] = useState<string[]>([]);
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [hasInteracted, setHasInteracted] = useState<boolean>(false);
   const [alertsToShowCount, setAlertsToShowCount] = useState<number>(2);
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
   const watchlistScrollRef = useRef<HTMLDivElement>(null);
+
+  // Prime audio on first interaction
+  useEffect(() => {
+    const handleFirstClick = () => {
+      if (!hasInteracted && audioRef.current) {
+        // Play a very short silent burst or just the sound and immediately pause it
+        // to "unlock" the audio context for this session
+        audioRef.current.play().then(() => {
+          audioRef.current?.pause();
+          if (audioRef.current) audioRef.current.currentTime = 0;
+          setHasInteracted(true);
+        }).catch(() => {
+          // Still blocked, will try again on next click
+        });
+      }
+    };
+    window.addEventListener('click', handleFirstClick);
+    window.addEventListener('touchstart', handleFirstClick);
+    return () => {
+      window.removeEventListener('click', handleFirstClick);
+      window.removeEventListener('touchstart', handleFirstClick);
+    };
+  }, [hasInteracted]);
 
   useEffect(() => {
     if (watchlistScrollRef.current && selectedItems.length > 0) {
@@ -142,7 +166,14 @@ export default function App() {
 
   const playAlert = () => {
     if (!isMuted && audioRef.current) {
-      audioRef.current.play().catch(e => console.error("Audio play failed", e));
+      audioRef.current.play().catch(e => {
+        if (e.name === 'NotAllowedError') {
+          console.warn("Audio blocked. Awaiting user interaction.");
+          setHasInteracted(false);
+        } else {
+          console.error("Audio play failed", e);
+        }
+      });
     }
   };
 
@@ -335,10 +366,37 @@ export default function App() {
     return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
   };
 
+  const formatCountdown = (until: number) => {
+    if (!until) return null;
+    const diff = until - Math.floor(currentTime / 1000);
+    if (diff <= 0) return null;
+    
+    const h = Math.floor(diff / 3600);
+    const m = Math.floor((diff % 3600) / 60);
+    const s = diff % 60;
+    
+    if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const formatCompactNumber = (num: number) => {
+    if (num === undefined || num === null) return '0';
+    if (num < 1000) return num.toString();
+    if (num < 1000000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    if (num < 1000000000) return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    return (num / 1000000000).toFixed(1).replace(/\.0$/, '') + 'B';
+  };
+
+  const getDestination = (desc: string) => {
+    if (!desc) return '';
+    const matches = desc.match(/(?:In|Traveling to) ([^.,]+)/i);
+    return matches ? matches[1].trim() : '';
+  };
+
   const fetchSellerProfile = async (sellerId: number, force = false) => {
     if (sellerDetails[sellerId] && !force) return;
     try {
-      const resp = await fetch(`${TORN_API_BASE}/user/${sellerId}?selections=profile&key=${apiKey}&ts=${Math.floor(Date.now() / 10000)}`);
+      const resp = await fetch(`${TORN_API_BASE}/user/${sellerId}?selections=profile,personalstats&key=${apiKey}&ts=${Math.floor(Date.now() / 10000)}`);
       const data = await resp.json();
       if (!data.error) {
         setSellerDetails(prev => ({ ...prev, [sellerId]: { ...data, seller_id: sellerId } }));
@@ -586,7 +644,13 @@ export default function App() {
           </div>
           <div className="bg-[#121212] border border-white/10 rounded-2xl p-6 shadow-2xl">
             <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-purple-400" /> Secure Access</h2>
-            <form onSubmit={(e) => { e.preventDefault(); handleLogin(apiKey); }}>
+            <form onSubmit={(e) => { 
+                e.preventDefault(); 
+                // Prime on login button click
+                playAlert();
+                setTimeout(() => stopAlert(), 100);
+                handleLogin(apiKey); 
+              }}>
               <div className="space-y-4">
                 <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="API KEY" className="w-full bg-black border border-white/5 rounded-xl py-3 px-4 text-sm text-purple-100 focus:border-purple-500/50 font-mono" />
                 {error && <div className="text-red-400 text-xs bg-red-400/10 p-3 rounded-lg border border-red-400/20">{error}</div>}
@@ -610,7 +674,16 @@ export default function App() {
             <h1 className="text-base md:text-lg font-black tracking-tighter italic bg-gradient-to-r from-white to-purple-400 bg-clip-text text-transparent">SHADOW BAZAAR</h1>
           </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => { setIsMuted(!isMuted); stopAlert(); }} className={`p-1.5 rounded-lg border transition-all ${isMuted ? 'bg-white/5 text-gray-500 border-white/5' : 'bg-purple-500/10 text-purple-400 border-purple-500/20'}`}>
+                <button onClick={() => { 
+                  const nextMute = !isMuted;
+                  setIsMuted(nextMute); 
+                  if (!nextMute) {
+                    playAlert();
+                    setTimeout(() => stopAlert(), 100);
+                  } else {
+                    stopAlert(); 
+                  }
+                }} className={`p-1.5 rounded-lg border transition-all ${isMuted ? 'bg-white/5 text-gray-500 border-white/5' : 'bg-purple-500/10 text-purple-400 border-purple-500/20'}`}>
                   {isMuted ? <ShieldAlert className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
                 </button>
                 <div className="flex items-center gap-2 px-2 py-1 bg-white/5 rounded-lg border border-white/5 max-w-[150px] md:max-w-none">
@@ -816,7 +889,14 @@ export default function App() {
                   <div className="flex flex-col">
                       <div className="flex items-center gap-2">
                         <ArrowRightLeft className="w-3.5 h-3.5 text-purple-500" /> 
-                        <span className="text-[11px] font-black uppercase text-white tracking-widest brightness-150">{selectedItems.find(i => i.id === activeItemId)?.name || 'Feed Intel'}</span>
+                        <span className="text-[11px] font-black uppercase text-white tracking-widest brightness-150">
+                          {selectedItems.find(i => i.id === activeItemId)?.name || 'Feed Intel'}
+                          {marketData?.market_price && (
+                            <span className="ml-2 text-[9px] text-purple-400 opacity-80 border-l border-white/10 pl-2">
+                              MP: ${marketData.market_price.toLocaleString('en-US')}
+                            </span>
+                          )}
+                        </span>
                         {lastSyncTime && <span className="text-[8px] text-gray-700 font-mono ml-1 opacity-50 bg-white/5 px-1 rounded">SYNC: {lastSyncTime}</span>}
                       </div>
                     <span className="text-[8px] text-gray-600 font-mono">ENCRYPTED DATA STREAM</span>
@@ -1081,7 +1161,14 @@ export default function App() {
                               <div className="flex items-center gap-2">
                                 <button onClick={() => window.open(`https://www.torn.com/profiles.php?XID=${listing.player_id}`, '_blank')} className="text-[11px] font-bold text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors text-left truncate max-w-[140px] group/name">
                                   <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${seller?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : seller?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-700'}`} />
-                                  <span className="truncate">{listing.player_name || `User#${listing.player_id}`}</span>
+                                  <div className="flex flex-col">
+                                    <span className="truncate">{listing.player_name || `User#${listing.player_id}`}</span>
+                                    {seller?.personalstats?.networth && (
+                                      <span className="text-[8px] text-gray-500 font-mono mt-[-2px]">
+                                        [{formatCompactNumber(seller.personalstats.networth)}]
+                                      </span>
+                                    )}
+                                  </div>
                                 </button>
                                 <button 
                                   onClick={() => refreshSpecificBazaar(listing.player_id, activeItemId)}
@@ -1118,6 +1205,22 @@ export default function App() {
                                     <div className={`w-1 h-1 rounded-full ${seller.status.state === 'Okay' ? 'bg-green-500' : 'bg-red-500'}`} />
                                     <span className={seller.status.state === 'Okay' ? 'text-green-500/80' : 'text-red-500/80'}>
                                       {getSimpleStatus(seller.status)}
+                                      {(seller.status.state === 'Travel' || seller.status.state === 'Abroad') && (
+                                        <span className="ml-1 text-[8.5px] text-blue-300 font-black">
+                                          {getDestination(seller.status.description)}
+                                        </span>
+                                      )}
+                                    </span>
+                                    {seller.status.until > 0 && (
+                                      <span className="text-[7px] text-red-400 font-mono ml-0.5">
+                                        [{formatCountdown(seller.status.until)}]
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1 opacity-70">
+                                    <ShieldCheck className={`w-2 h-2 ${seller.revivable === 1 ? 'text-blue-400' : 'text-gray-600 grayscale'}`} />
+                                    <span className={`text-[7.5px] font-black uppercase tracking-tighter ${seller.revivable === 1 ? 'text-blue-400' : 'text-gray-600'}`}>
+                                      {seller.revivable === 1 ? 'REVIVABLE' : 'LOCKED'}
                                     </span>
                                   </div>
                                 </div>
