@@ -63,6 +63,12 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
   const [activeItemId, setActiveItemId] = useState<string>('');
+  const activeItemIdRef = useRef<string>('');
+  
+  // Sync ref with activeItemId
+  useEffect(() => {
+    activeItemIdRef.current = activeItemId;
+  }, [activeItemId]);
   
   const [itemIdInput, setItemIdInput] = useState<string>('');
   const [marketData, setMarketData] = useState<MarketplaceData | null>(null);
@@ -265,8 +271,10 @@ export default function App() {
   // Fetch when active item changes
   useEffect(() => {
     if (activeItemId && isLoggedIn) {
-      fetchMarketData(activeItemId);
+      // Clear old data immediately to prevent "ghost" data from showing
+      setMarketData(null);
       setListingsToShow(5);
+      fetchMarketData(activeItemId);
     }
   }, [activeItemId, isLoggedIn]);
 
@@ -358,13 +366,15 @@ export default function App() {
     else setIsRefreshing(true);
     
     setError(null);
-    if (!isAuto) setItemIdInput(''); 
     try {
       // Use more frequent cache-buster for stock accuracy
       const response = await fetch(`${MARKETPLACE_API_BASE}/${id}?ts=${Date.now()}`);
       if (!response.ok) throw new Error('Item ID invalid.');
       const data: MarketplaceData = await response.json();
       
+      // Safety check: Only apply data if this is still the active item
+      if (activeItemIdRef.current !== id) return;
+
       data.listings.sort((a, b) => a.price - b.price);
       setMarketData(data);
       setLastSyncTime(new Date().toLocaleTimeString());
@@ -383,19 +393,28 @@ export default function App() {
       const initialIds = data.listings.slice(0, 10).map(l => l.player_id);
       syncSellersBatch(initialIds);
 
-      if (!selectedItems.find(i => i.id === id)) {
-        const itemInfo = allItems.find(it => it.id === id) || ITEMS_DATABASE.find(it => it.id === id);
-        setSelectedItems(prev => [...prev, { id, name: data.item_name || itemInfo?.name || `Item ${id}` }].slice(-10));
-      }
-      if (!isAuto) setActiveItemId(id);
       setDismissedAlerts(prev => prev.filter(i => i !== id));
       return data;
     } catch (err) {
-      setError('Market fetch failed.');
+      // Only set error if this is still the active item
+      if (activeItemIdRef.current === id) {
+        setError('Market fetch failed.');
+      }
     } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
+      if (activeItemIdRef.current === id) {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
     }
+  };
+
+  const selectItem = (id: string) => {
+    setItemIdInput('');
+    if (!selectedItems.find(it => it.id === id)) {
+      const itemInfo = allItems.find(it => it.id === id) || ITEMS_DATABASE.find(it => it.id === id);
+      setSelectedItems(prev => [...prev.filter(it => it.id !== id), { id, name: itemInfo?.name || `Item ${id}` }].slice(-10));
+    }
+    setActiveItemId(id);
   };
 
   const refreshSpecificBazaar = async (sellerId: number, itemId: string) => {
@@ -496,11 +515,11 @@ export default function App() {
     if (selectedItems.find(i => i.id === item.id)) {
       setSelectedItems(prev => prev.filter(i => i.id !== item.id));
       if (activeItemId === item.id) {
-        setActiveItemId(selectedItems.find(i => i.id !== item.id)?.id || '');
+        const remaining = selectedItems.filter(i => i.id !== item.id);
+        setActiveItemId(remaining.length > 0 ? remaining[0].id : '');
       }
     } else {
-      setSelectedItems(prev => [...prev, item]);
-      setActiveItemId(item.id);
+      selectItem(item.id);
     }
   };
 
@@ -688,7 +707,7 @@ export default function App() {
                 placeholder="Search Item Name, ID or Category..." 
                 value={itemIdInput} 
                 onChange={(e) => setItemIdInput(e.target.value)} 
-                onKeyDown={(e) => e.key === 'Enter' && fuzzyResults[0] && fetchMarketData(fuzzyResults[0].id)} 
+                onKeyDown={(e) => e.key === 'Enter' && fuzzyResults[0] && selectItem(fuzzyResults[0].id)} 
                 className="w-full bg-black/60 border border-white/10 rounded-xl py-2.5 px-10 text-xs text-white focus:border-purple-500/40 font-mono" 
               />
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
@@ -698,7 +717,7 @@ export default function App() {
               {fuzzyResults.length > 0 && (
                 <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="absolute top-full left-0 right-0 mt-1 bg-[#1a1a1a]/95 backdrop-blur-3xl border border-white/10 rounded-xl overflow-hidden z-[60] shadow-2xl">
                   {fuzzyResults.map(res => (
-                    <button key={res.id} onClick={() => fetchMarketData(res.id)} className="w-full px-4 py-2 hover:bg-purple-600/20 flex items-center justify-between text-left text-[11px] group transition-colors">
+                    <button key={res.id} onClick={() => selectItem(res.id)} className="w-full px-4 py-2 hover:bg-purple-600/20 flex items-center justify-between text-left text-[11px] group transition-colors">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 bg-black/40 rounded-lg border border-white/5 flex items-center justify-center p-1 shrink-0">
                           <img src={`https://www.torn.com/images/items/${res.id}/medium.png`} alt="" className="max-w-full max-h-full object-contain" referrerPolicy="no-referrer" />
@@ -731,10 +750,7 @@ export default function App() {
                   >
                     <div className="flex flex-col gap-1.5">
                       <button 
-                        onClick={() => {
-                          setActiveItemId(item.id);
-                          fetchMarketData(item.id);
-                        }} 
+                        onClick={() => selectItem(item.id)} 
                         className="flex items-center gap-2 group/btn"
                       >
                         <img src={`https://www.torn.com/images/items/${item.id}/medium.png`} alt="" className="w-5 h-5 object-contain" referrerPolicy="no-referrer" />
