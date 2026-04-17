@@ -78,6 +78,9 @@ export default function App() {
     return saved ? parseInt(saved) : 30; // default 30s
   });
   const [secondsLeft, setSecondsLeft] = useState<number>(autoRefreshInterval);
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
+  const [bazaarSyncTimes, setBazaarSyncTimes] = useState<Record<number, number>>({});
+  const [rowRefreshing, setRowRefreshing] = useState<Record<number, boolean>>({});
 
   // Alert State
   const [alertPrices, setAlertPrices] = useState<Record<string, string>>(() => {
@@ -85,6 +88,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : {};
   });
   const [triggeredAlerts, setTriggeredAlerts] = useState<string[]>([]);
+  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [alertsToShowCount, setAlertsToShowCount] = useState<number>(2);
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
@@ -166,7 +170,9 @@ export default function App() {
         const lowest = data.listings[0]?.price || 0;
         const target = parseFloat(alertPrices[item.id] || '0');
         
-        if (target > 0 && lowest <= target) {
+      if (target > 0 && lowest <= target) {
+        // Only trigger if not dismissed
+        if (!dismissedAlerts.includes(item.id)) {
           // If alerted, also update seller profiles for that item
           const topSellers = data.listings.slice(0, 3).map(l => l.player_id);
           topSellers.map(sid => fetchSellerProfile(sid, true));
@@ -179,6 +185,10 @@ export default function App() {
             return prev;
           });
         }
+      } else {
+        // Auto-clear from dismissed if price is no longer low (allows re-alerting if it drops again)
+        setDismissedAlerts(prev => prev.filter(id => id !== item.id));
+      }
       } catch (e) {
         console.error(`Alert check failed for ${item.id}`, e);
       }
@@ -298,6 +308,25 @@ export default function App() {
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+  // Main Time loop for relative times
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatRelativeTime = (timestamp: number) => {
+    if (!timestamp) return 'Never';
+    const diff = Math.floor((currentTime - timestamp) / 1000);
+    if (diff < 1) return '0s';
+    if (diff < 60) return `${diff}s`;
+    const mins = Math.floor(diff / 60);
+    const secs = diff % 60;
+    if (mins < 60) return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
+  };
+
   const fetchSellerProfile = async (sellerId: number, force = false) => {
     if (sellerDetails[sellerId] && !force) return;
     try {
@@ -331,13 +360,24 @@ export default function App() {
     setError(null);
     if (!isAuto) setItemIdInput(''); 
     try {
-      const response = await fetch(`${MARKETPLACE_API_BASE}/${id}?ts=${Math.floor(Date.now() / 60000)}`);
+      // Use more frequent cache-buster for stock accuracy
+      const response = await fetch(`${MARKETPLACE_API_BASE}/${id}?ts=${Date.now()}`);
       if (!response.ok) throw new Error('Item ID invalid.');
       const data: MarketplaceData = await response.json();
       
       data.listings.sort((a, b) => a.price - b.price);
       setMarketData(data);
       setLastSyncTime(new Date().toLocaleTimeString());
+
+      // Update sync times for everyone in this fetch
+      const now = Date.now();
+      setBazaarSyncTimes(prev => {
+        const next = { ...prev };
+        data.listings.forEach(l => {
+          next[l.player_id] = now;
+        });
+        return next;
+      });
       
       // Initial sync of the visible chunk
       const initialIds = data.listings.slice(0, 10).map(l => l.player_id);
@@ -348,12 +388,61 @@ export default function App() {
         setSelectedItems(prev => [...prev, { id, name: data.item_name || itemInfo?.name || `Item ${id}` }].slice(-10));
       }
       if (!isAuto) setActiveItemId(id);
+      setDismissedAlerts(prev => prev.filter(i => i !== id));
       return data;
     } catch (err) {
       setError('Market fetch failed.');
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
+    }
+  };
+
+  const refreshSpecificBazaar = async (sellerId: number, itemId: string) => {
+    if (!isLoggedIn || !apiKey || !itemId) return;
+    setRowRefreshing(prev => ({ ...prev, [sellerId]: true }));
+    try {
+      // Fetch specifically for this user's bazaar to avoid "recall all"
+      const resp = await fetch(`${TORN_API_BASE}/user/${sellerId}?selections=bazaar&key=${apiKey}&ts=${Date.now()}`);
+      const data = await resp.json();
+      
+      if (data && data.bazaar) {
+        setBazaarSyncTimes(prev => ({ ...prev, [sellerId]: Date.now() }));
+        
+        // Handle both Array and Object formats from Torn API for the bazaar selection
+        const bazaarList = Array.isArray(data.bazaar) ? data.bazaar : Object.values(data.bazaar);
+        
+        // Find the specific item in their bazaar - using robust comparison and multiple possible ID keys
+        const bazaarItem: any = bazaarList.find((it: any) => 
+          String(it.ID || it.item_id || it.itemId) === String(itemId)
+        );
+        
+        setMarketData(prev => {
+          if (!prev || String(prev.item_id) !== String(itemId)) return prev;
+          
+          let newListings = [...prev.listings];
+          if (bazaarItem) {
+            // Update existing listing with new price/quantity
+            const idx = newListings.findIndex(l => l.player_id === sellerId);
+            if (idx !== -1) {
+              newListings[idx] = {
+                ...newListings[idx],
+                price: bazaarItem.price || bazaarItem.market_price || newListings[idx].price,
+                quantity: bazaarItem.quantity
+              };
+            }
+          } else if (bazaarList.length > 0 || (typeof data.bazaar === 'object' && Object.keys(data.bazaar).length > 0)) {
+            // Only remove if we successfully got data and the item is definitely gone
+            newListings = newListings.filter(l => l.player_id !== sellerId);
+          }
+          
+          return { ...prev, listings: newListings.sort((a, b) => a.price - b.price) };
+        });
+      }
+    } catch (e) {
+      console.error("Single bazaar refresh failed", e);
+    } finally {
+      setRowRefreshing(prev => ({ ...prev, [sellerId]: false }));
     }
   };
 
@@ -563,7 +652,11 @@ export default function App() {
                         <button onClick={() => setActiveItemId(id)} className="p-2 bg-white/5 hover:bg-white/10 rounded-lg transition-colors border border-white/5">
                           <ExternalLink className="w-3 h-3 text-purple-400" />
                         </button>
-                        <button onClick={() => setTriggeredAlerts(prev => prev.filter(a => a !== id))} className="p-2 bg-white/5 hover:bg-red-500/20 rounded-lg transition-colors border border-white/5 group-hover:border-red-500/30">
+                        <button onClick={() => {
+                          setTriggeredAlerts(prev => prev.filter(a => a !== id));
+                          setDismissedAlerts(prev => [...prev, id]);
+                          stopAlert();
+                        }} className="p-2 bg-white/5 hover:bg-red-500/20 rounded-lg transition-colors border border-white/5 group-hover:border-red-500/30">
                           <X className="w-3 h-3 text-gray-500 group-hover:text-red-400" />
                         </button>
                       </div>
@@ -948,7 +1041,8 @@ export default function App() {
                       .slice(0, listingsToShow).map((listing, index) => {
                         const seller = sellerDetails[listing.player_id];
                         const targetPrice = parseFloat(alertPrices[activeItemId] || '0');
-                        const isQualifyingAlert = targetPrice > 0 && listing.price <= targetPrice;
+                        const isAlertActive = targetPrice > 0 && listing.price <= targetPrice;
+                        const isQualifyingAlert = isAlertActive && !dismissedAlerts.includes(activeItemId);
 
                         return (
                           <motion.tr 
@@ -967,15 +1061,41 @@ export default function App() {
                             className={`group hover:bg-white/[0.02] transition-colors ${index === 0 && !isQualifyingAlert ? 'bg-purple-500/5' : ''} ${isQualifyingAlert ? 'border-l-2 border-red-500' : ''}`}
                           >
                           <td className="px-4 py-3">
-                            <div className="flex flex-col min-w-[120px]">
-                              <button onClick={() => window.open(`https://www.torn.com/profiles.php?XID=${listing.player_id}`, '_blank')} className="text-[11px] font-bold text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors text-left truncate max-w-[140px] group/name">
-                                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${seller?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : seller?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-700'}`} />
-                                <span className="truncate">{listing.player_name || `User#${listing.player_id}`}</span>
-                              </button>
+                            <div className="flex flex-col min-w-[150px]">
+                              <div className="flex items-center gap-2">
+                                <button onClick={() => window.open(`https://www.torn.com/profiles.php?XID=${listing.player_id}`, '_blank')} className="text-[11px] font-bold text-purple-300 hover:text-white flex items-center gap-1.5 transition-colors text-left truncate max-w-[140px] group/name">
+                                  <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${seller?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : seller?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-700'}`} />
+                                  <span className="truncate">{listing.player_name || `User#${listing.player_id}`}</span>
+                                </button>
+                                <button 
+                                  onClick={() => refreshSpecificBazaar(listing.player_id, activeItemId)}
+                                  disabled={rowRefreshing[listing.player_id]}
+                                  className={`p-1 rounded bg-white/5 hover:bg-white/10 transition-all ${rowRefreshing[listing.player_id] ? 'text-purple-500' : 'text-gray-600 hover:text-purple-400'}`}
+                                  title="Refresh This Bazaar Only"
+                                >
+                                  <RefreshCw className={`w-2.5 h-2.5 ${rowRefreshing[listing.player_id] ? 'animate-spin text-purple-500' : ''}`} />
+                                </button>
+                                {isQualifyingAlert && (
+                                  <button 
+                                    onClick={() => {
+                                      setDismissedAlerts(prev => [...prev, activeItemId]);
+                                      setTriggeredAlerts(prev => prev.filter(a => a !== activeItemId));
+                                      stopAlert();
+                                    }}
+                                    className="p-1 rounded bg-red-500/20 hover:bg-red-500 text-red-500 hover:text-white transition-all"
+                                    title="Dismiss Alert"
+                                  >
+                                    <ShieldAlert className="w-2.5 h-2.5" />
+                                  </button>
+                                )}
+                              </div>
                               {/* Horizontal sub-info colorful row */}
                               {seller ? (
                                 <div className="flex items-center gap-2 mt-1 whitespace-nowrap overflow-x-auto no-scrollbar text-[9px]">
                                   <span className="text-purple-500/80 font-black">ID:{listing.player_id}</span>
+                                  <span className="text-[8px] text-gray-500 uppercase flex items-center gap-1">
+                                    {formatRelativeTime(bazaarSyncTimes[listing.player_id] || 0)}
+                                  </span>
                                   <span className="text-blue-400/80 font-bold">L:{seller.level}</span>
                                   <span className={getAgeColor(seller.age)}>{seller.age.toLocaleString('en-US')}D</span>
                                   <div className="flex items-center gap-1">
