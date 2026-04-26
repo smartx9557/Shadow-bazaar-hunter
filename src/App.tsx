@@ -33,7 +33,9 @@ import {
   Copy,
   Swords,
   Clock,
-  Store
+  Store,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MarketplaceData, TornProfile, EnrichedSeller, MarketplaceListing, SelectedItem, TargetUser } from './types';
@@ -79,6 +81,10 @@ export default function App() {
   
   const [itemIdInput, setItemIdInput] = useState<string>('');
   const [marketData, setMarketData] = useState<MarketplaceData | null>(null);
+  const [marketMode, setMarketMode] = useState<'bazaar' | 'market'>(() => {
+    return (localStorage.getItem('shadow_market_mode') as 'bazaar' | 'market') || 'bazaar';
+  });
+  const marketModeRef = useRef<'bazaar' | 'market'>(marketMode);
   const [sellerDetails, setSellerDetails] = useState<Record<number, EnrichedSeller>>({});
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,8 +107,20 @@ export default function App() {
     return saved ? JSON.parse(saved) : {};
   });
   const [triggeredAlerts, setTriggeredAlerts] = useState<string[]>([]);
+  const triggeredAlertsRef = useRef<string[]>([]);
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
-  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [isMuted, setIsMuted] = useState<boolean>(() => {
+    return localStorage.getItem('shadow_is_muted') === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('shadow_is_muted', isMuted ? 'true' : 'false');
+  }, [isMuted]);
+
+  // Sync state with ref for background loop
+  useEffect(() => {
+    triggeredAlertsRef.current = triggeredAlerts;
+  }, [triggeredAlerts]);
   const [hasInteracted, setHasInteracted] = useState<boolean>(false);
   const [alertsToShowCount, setAlertsToShowCount] = useState<number>(2);
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
@@ -141,6 +159,13 @@ export default function App() {
   const [buyPrice, setBuyPrice] = useState<string>('');
   const [sellPrice, setSellPrice] = useState<string>('');
   
+  // Sync market mode to storage
+  useEffect(() => {
+    marketModeRef.current = marketMode;
+    localStorage.setItem('shadow_market_mode', marketMode);
+    if (activeItemId) fetchMarketData(activeItemId);
+  }, [marketMode]);
+
   // Toast State
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
@@ -218,16 +243,44 @@ export default function App() {
     localStorage.setItem('shadow_alert_prices', JSON.stringify(alertPrices));
   }, [alertPrices]);
 
-  const playAlert = () => {
-    if (!isMuted && audioRef.current) {
-      audioRef.current.play().catch(e => {
+  // Monitor for active alerts and handle looping audio
+  useEffect(() => {
+    const activeAlertsCount = triggeredAlerts.filter(id => !dismissedAlerts.includes(id)).length;
+    
+    if (audioRef.current) {
+      if (activeAlertsCount > 0 && !isMuted) {
+        // Start looping if there are active alerts and not muted
+        audioRef.current.loop = true;
+        audioRef.current.play().catch(e => {
+          if (e.name === 'NotAllowedError') {
+            setHasInteracted(false);
+          }
+        });
+      } else {
+        // Stop looping and reset if no active alerts or muted
+        audioRef.current.loop = false;
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+    }
+  }, [triggeredAlerts, dismissedAlerts, isMuted]);
+
+  const playAlert = (isTest: boolean = false) => {
+    if (audioRef.current && !isMuted) {
+      // If we are already looping from an active alert, no need to touch it
+      if (audioRef.current.loop && !isTest) return;
+
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().then(() => {
+        if (!isTest) showToast("🔔 Price Alert Triggered!", "success");
+      }).catch(e => {
         if (e.name === 'NotAllowedError') {
-          console.warn("Audio blocked. Awaiting user interaction.");
           setHasInteracted(false);
-        } else {
-          console.error("Audio play failed", e);
+          if (!isTest) showToast("Sound blocked. Click anywhere to activate.", "info");
         }
       });
+    } else if (isMuted && isTest) {
+      showToast("App is muted. Unmute to hear alerts.", "info");
     }
   };
 
@@ -256,30 +309,37 @@ export default function App() {
     if (!isLoggedIn) return;
     for (const item of selectedItems) {
       try {
-        const response = await fetch(`${MARKETPLACE_API_BASE}/${item.id}?ts=${Date.now()}`);
-        const data: MarketplaceData = await response.json();
-        const lowest = data.listings[0]?.price || 0;
+        // Parallel check for absolute lowest price
+        const [bazResp, mktResp] = await Promise.all([
+          fetch(`${MARKETPLACE_API_BASE}/${item.id}?ts=${Date.now()}`).then(r => r.json()),
+          fetch(`${TORN_API_BASE}/v2/market/itemmarket?key=${apiKey}&id=${item.id}&ts=${Date.now()}`).then(r => r.json())
+        ]);
+
+        const bazLowest = bazResp?.listings?.[0]?.price || Infinity;
+        const mktListings = mktResp?.itemmarket?.listings || [];
+        const mktLowest = mktListings[0]?.price || Infinity;
+
+        const lowest = Math.min(bazLowest, mktLowest);
         const target = parseFloat(alertPrices[item.id] || '0');
         
-      if (target > 0 && lowest <= target) {
-        // Only trigger if not dismissed
-        if (!dismissedAlerts.includes(item.id)) {
-          // If alerted, also update seller profiles for that item
-          const topSellers = data.listings.slice(0, 3).map(l => l.player_id);
-          topSellers.map(sid => fetchSellerProfile(sid, true));
-
-          setTriggeredAlerts(prev => {
-            if (!prev.includes(item.id)) {
-              playAlert();
-              return [item.id, ...prev];
+        if (target > 0 && lowest <= target && lowest !== Infinity) {
+          // Only trigger if not dismissed
+          if (!dismissedAlerts.includes(item.id)) {
+            // Update sellers if it's a bazaar alert
+            if (bazLowest <= mktLowest && bazResp?.listings) {
+              const topSellers = bazResp.listings.slice(0, 3).map((l: any) => l.player_id);
+              topSellers.map((sid: number) => fetchSellerProfile(sid, true));
             }
-            return prev;
-          });
+
+            if (!triggeredAlertsRef.current.includes(item.id)) {
+              playAlert(false);
+              setTriggeredAlerts(prev => [item.id, ...prev]);
+            }
+          }
+        } else {
+          // Auto-clear from dismissed if price is no longer low (allows re-alerting if it drops again)
+          setDismissedAlerts(prev => prev.filter(id => id !== item.id));
         }
-      } else {
-        // Auto-clear from dismissed if price is no longer low (allows re-alerting if it drops again)
-        setDismissedAlerts(prev => prev.filter(id => id !== item.id));
-      }
       } catch (e) {
         console.error(`Alert check failed for ${item.id}`, e);
       }
@@ -568,33 +628,69 @@ export default function App() {
     if (!isAuto) setIsLoading(true);
     else setIsRefreshing(true);
     
+    // Capture the mode at start of fetch
+    const fetchMode = marketModeRef.current;
+    
     setError(null);
     try {
-      // Use more frequent cache-buster for stock accuracy
-      const response = await fetch(`${MARKETPLACE_API_BASE}/${id}?ts=${Date.now()}`);
-      if (!response.ok) throw new Error('Item ID invalid.');
-      const data: MarketplaceData = await response.json();
+      let data: MarketplaceData;
+
+      if (fetchMode === 'bazaar') {
+        const response = await fetch(`${MARKETPLACE_API_BASE}/${id}?ts=${Date.now()}`);
+        if (!response.ok) throw new Error('Item ID invalid.');
+        data = await response.json();
+      } else {
+        // Item Market from Torn API v2
+        const response = await fetch(`${TORN_API_BASE}/v2/market/itemmarket?key=${apiKey}&id=${id}&ts=${Date.now()}`);
+        const tornData = await response.json();
+        
+        if (tornData.error) throw new Error(tornData.error.error || 'Market fetch failed');
+        
+        const mktListings = tornData.itemmarket?.listings || [];
+        const itemName = allItems.find(it => it.id === id)?.name || ITEMS_DATABASE.find(it => it.id === id)?.name || `Item ${id}`;
+        
+        data = {
+          item_id: parseInt(id),
+          item_name: itemName,
+          market_price: mktListings[0]?.price || 0,
+          bazaar_average: 0,
+          total_listings: mktListings.reduce((acc: number, cur: any) => acc + (cur.amount || 0), 0),
+          listings: mktListings.map((l: any, idx: number) => ({
+             item_id: parseInt(id),
+             player_id: l.seller || -1, 
+             player_name: sellerDetails[l.seller]?.name || 'Item Market Listing',
+             quantity: l.amount || 0,
+             price: l.price || 0,
+             content_updated: Math.floor(Date.now() / 1000),
+             last_checked: Math.floor(Date.now() / 1000),
+             content_updated_relative: 'Just Now',
+             last_checked_relative: 'Just Now'
+          }))
+        };
+      }
       
-      // Safety check: Only apply data if this is still the active item
-      if (activeItemIdRef.current !== id) return;
+      // Safety check: Only apply data if this is still the active item AND correct mode
+      if (activeItemIdRef.current !== id || marketModeRef.current !== fetchMode) return;
 
       data.listings.sort((a, b) => a.price - b.price);
       setMarketData(data);
       setLastSyncTime(new Date().toLocaleTimeString());
 
-      // Update sync times for everyone in this fetch
-      const now = Date.now();
-      setBazaarSyncTimes(prev => {
-        const next = { ...prev };
-        data.listings.forEach(l => {
-          next[l.player_id] = now;
+      if (fetchMode === 'bazaar') {
+        // Update sync times for everyone in this fetch
+        const now = Date.now();
+        setBazaarSyncTimes(prev => {
+          const next = { ...prev };
+          data.listings.forEach(l => {
+            next[l.player_id] = now;
+          });
+          return next;
         });
-        return next;
-      });
-      
-      // Initial sync of the visible chunk
-      const initialIds = data.listings.slice(0, 10).map(l => l.player_id);
-      syncSellersBatch(initialIds);
+        
+        // Initial sync of the visible chunk
+        const initialIds = data.listings.slice(0, 10).map(l => l.player_id);
+        syncSellersBatch(initialIds);
+      }
 
       setDismissedAlerts(prev => prev.filter(i => i !== id));
       return data;
@@ -617,11 +713,12 @@ export default function App() {
       const itemInfo = allItems.find(it => it.id === id) || ITEMS_DATABASE.find(it => it.id === id);
       setSelectedItems(prev => [...prev.filter(it => it.id !== id), { id, name: itemInfo?.name || `Item ${id}` }].slice(-10));
     }
+    setMarketData(null); // Clear previous data to prevent "old listings with new item name" glitch
     setActiveItemId(id);
   };
 
   const refreshSpecificBazaar = async (sellerId: number, itemId: string) => {
-    if (!isLoggedIn || !apiKey || !itemId) return;
+    if (!isLoggedIn || !apiKey || !itemId || sellerId === -1) return;
     setRowRefreshing(prev => ({ ...prev, [sellerId]: true }));
     try {
       // Fetch specifically for this user's bazaar to avoid "recall all"
@@ -732,7 +829,7 @@ export default function App() {
     const num = parseFloat(clean);
     if (isNaN(num)) return val;
     const parts = clean.split('.');
-    const formatted = parseInt(parts[0]).toLocaleString('en-US');
+    const formatted = (parseInt(parts[0]) || 0).toLocaleString('en-US');
     return parts.length > 1 ? `${formatted}.${parts[1].slice(0, 2)}` : formatted;
   };
 
@@ -814,22 +911,17 @@ export default function App() {
 
       <header className="sticky top-0 z-50 bg-[#050505]/90 backdrop-blur-xl border-b border-white/5 py-2 px-4 md:px-6">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-purple-500" />
+          <div className="flex items-center gap-2" title="Shadow Bazaar Dashboard">
+            <TrendingUp className="w-4 h-4 text-purple-500" title="Live Market Tracking" />
             <h1 className="text-base md:text-lg font-black tracking-tighter italic bg-gradient-to-r from-white to-purple-400 bg-clip-text text-transparent">SHADOW BAZAAR</h1>
           </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => { 
-                  const nextMute = !isMuted;
-                  setIsMuted(nextMute); 
-                  if (!nextMute) {
-                    playAlert();
-                    setTimeout(() => stopAlert(), 100);
-                  } else {
-                    stopAlert(); 
-                  }
-                }} className={`p-1.5 rounded-lg border transition-all ${isMuted ? 'bg-white/5 text-gray-500 border-white/5' : 'bg-purple-500/10 text-purple-400 border-purple-500/20'}`}>
-                  {isMuted ? <ShieldAlert className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                <button 
+                  onClick={() => setIsMuted(!isMuted)}
+                  className={`p-1.5 rounded-lg border transition-all ${isMuted ? 'bg-white/5 text-gray-500 border-white/5' : 'bg-purple-500/10 text-purple-400 border-purple-500/20'}`}
+                  title={isMuted ? "Unmute Alerts (repeated sound toggle)" : "Mute Alerts (repeated sound toggle)"}
+                >
+                  {isMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
                 </button>
                 <div className="flex items-center gap-2 px-2 py-1 bg-white/5 rounded-lg border border-white/5 max-w-[150px] md:max-w-none">
                   <div className="flex flex-col items-end">
@@ -862,11 +954,26 @@ export default function App() {
                   <h2 className="text-sm font-black uppercase tracking-tighter text-red-400">Critical Price Alerts Detected</h2>
                 </div>
                 <div className="flex items-center gap-2">
-                   <button onClick={() => { setIsMuted(!isMuted); stopAlert(); }} className="px-3 py-1 bg-black/40 border border-white/5 rounded-lg text-[9px] font-bold hover:bg-white/5 transition-all">
+                   <button 
+                     onClick={() => setIsMuted(!isMuted)}
+                     className={`px-3 py-1 border rounded-lg text-[9px] font-bold transition-all ${isMuted ? 'bg-white/5 text-gray-500 border-white/10' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20'}`}
+                     title={isMuted ? "Unmute repeated alert sound" : "Mute repeated alert sound"}
+                   >
                      {isMuted ? 'UNMUTE ALARMS' : 'MUTE CURRENT'}
                    </button>
-                   <button onClick={stopAlert} className="px-3 py-1 bg-red-500/20 border border-red-500/30 rounded-lg text-[9px] font-bold text-red-400 hover:bg-red-500 hover:text-white transition-all">
+                   <button 
+                     onClick={stopAlert} 
+                     className="px-3 py-1 bg-red-500/20 border border-red-500/30 rounded-lg text-[9px] font-bold text-red-400 hover:bg-red-500 hover:text-white transition-all"
+                     title="Stop current looping sound"
+                   >
                      STOP SOUND
+                   </button>
+                   <button onClick={() => {
+                     setDismissedAlerts(prev => [...prev, ...triggeredAlerts]);
+                     setTriggeredAlerts([]);
+                     stopAlert();
+                   }} className="px-3 py-1 bg-black/40 border border-white/10 rounded-lg text-[9px] font-bold text-white hover:bg-white/10 transition-all">
+                     DISMISS ALL
                    </button>
                 </div>
               </div>
@@ -1009,18 +1116,36 @@ export default function App() {
         {activeItemId && marketData ? (
           <div className="space-y-4">
             {/* Horizontal Stats Strip */}
-            <div className="grid grid-cols-3 gap-2">
-              <div className="bg-purple-900/10 border border-purple-500/20 p-3 rounded-xl flex flex-col justify-center">
-                <span className="text-[8px] text-purple-400 font-bold uppercase truncate">Lowest Point</span>
-                <div className="text-sm font-black text-white">${(marketData.listings[0]?.price || 0).toLocaleString('en-US')}</div>
+            <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+              <div className="grid grid-cols-3 gap-2 flex-1 w-full">
+                <div className="bg-purple-900/10 border border-purple-500/20 p-3 rounded-xl flex flex-col justify-center">
+                  <span className="text-[8px] text-purple-400 font-bold uppercase truncate">Lowest Point</span>
+                  <div className="text-sm font-black text-white">${(marketData.listings?.[0]?.price || 0).toLocaleString('en-US')}</div>
+                </div>
+                <div className="bg-[#121212] border border-white/5 p-3 rounded-xl flex flex-col justify-center">
+                   <span className="text-[8px] text-gray-500 font-bold uppercase truncate">Avg Price</span>
+                   <div className="text-sm font-black">${(marketData.bazaar_average || marketData.market_price || 0).toLocaleString('en-US')}</div>
+                </div>
+                <div className="bg-[#121212] border border-white/5 p-3 rounded-xl flex flex-col justify-center text-right pr-4">
+                   <span className="text-[8px] text-gray-500 font-bold uppercase truncate">Total Stock</span>
+                   <div className="text-sm font-black">${(marketData.total_listings || 0).toLocaleString('en-US')}</div>
+                </div>
               </div>
-              <div className="bg-[#121212] border border-white/5 p-3 rounded-xl flex flex-col justify-center">
-                 <span className="text-[8px] text-gray-500 font-bold uppercase truncate">Bazaar Avg</span>
-                 <div className="text-sm font-black">${marketData.bazaar_average.toLocaleString('en-US')}</div>
-              </div>
-              <div className="bg-[#121212] border border-white/5 p-3 rounded-xl flex flex-col justify-center text-right pr-4">
-                 <span className="text-[8px] text-gray-500 font-bold uppercase truncate">Total Stock</span>
-                 <div className="text-sm font-black">{marketData.total_listings.toLocaleString('en-US')}</div>
+
+              {/* Mode Toggle */}
+              <div className="flex bg-black/40 p-1 rounded-xl border border-white/10 gap-1 self-stretch sm:self-center shrink-0">
+                <button 
+                  onClick={() => { setMarketData(null); setMarketMode('bazaar'); }}
+                  className={`flex flex-1 sm:flex-none justify-center items-center gap-2 px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${marketMode === 'bazaar' ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/20' : 'text-gray-500 hover:text-purple-400'}`}
+                >
+                  <Store className="w-3.5 h-3.5" /> Bazaar
+                </button>
+                <button 
+                  onClick={() => { setMarketData(null); setMarketMode('market'); }}
+                  className={`flex flex-1 sm:flex-none justify-center items-center gap-2 px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${marketMode === 'market' ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/20' : 'text-gray-500 hover:text-purple-400'}`}
+                >
+                  <ArrowRightLeft className="w-3.5 h-3.5" /> Market
+                </button>
               </div>
             </div>
 
@@ -1038,7 +1163,7 @@ export default function App() {
                           {selectedItems.find(i => i.id === activeItemId)?.name || 'Feed Intel'}
                           {marketData?.market_price && (
                             <span className="ml-2 text-[9px] text-purple-400 opacity-80 border-l border-white/10 pl-2">
-                              MP: ${marketData.market_price.toLocaleString('en-US')}
+                              MP: ${ (marketData.market_price || 0).toLocaleString('en-US') }
                             </span>
                           )}
                         </span>
@@ -1235,6 +1360,7 @@ export default function App() {
                   <tbody className="divide-y divide-white/5">
                     {marketData.listings
                       .filter(listing => {
+                        if (listing.player_id === -1) return true;
                         const seller = sellerDetails[listing.player_id];
                         // If no seller info yet, show it unless specifically filtered out by active filter choices
                         if (!seller) return true; 
@@ -1309,7 +1435,7 @@ export default function App() {
                                     <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${seller?.last_action?.status === 'Online' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : seller?.last_action?.status === 'Idle' ? 'bg-yellow-500' : 'bg-gray-700'}`} />
                                     <div className="flex flex-col">
                                       <span className="text-[11px] font-bold text-purple-300 group-hover/link:text-white truncate transition-colors">
-                                        {listing.player_name || `User#${listing.player_id}`}
+                                        {seller?.name || listing.player_name || `User#${listing.player_id}`}
                                       </span>
                                       {seller?.personalstats?.networth && (
                                         <span className="text-[8px] text-gray-500 font-mono mt-[-2px]">
@@ -1357,7 +1483,7 @@ export default function App() {
                                     {formatRelativeTime(bazaarSyncTimes[listing.player_id] || 0)}
                                   </span>
                                   <span className="text-blue-400/80 font-bold">L:{seller.level}</span>
-                                  <span className={getAgeColor(seller.age)}>{seller.age.toLocaleString('en-US')}D</span>
+                                  <span className={getAgeColor(seller.age)}>{(seller.age || 0).toLocaleString('en-US')}D</span>
                                   <div className="flex items-center gap-1">
                                     <div className={`w-1 h-1 rounded-full ${seller.status.state === 'Okay' ? 'bg-green-500' : 'bg-red-500'}`} />
                                     <span className={seller.status.state === 'Okay' ? 'text-green-500/80' : 'text-red-500/80'}>
@@ -1400,7 +1526,7 @@ export default function App() {
                             <div className="flex flex-col">
                               <div className="flex items-center gap-2">
                                 <span className={`text-[11px] font-black ${index === 0 ? 'text-purple-300' : 'text-white'}`}>
-                                  ${listing.price.toLocaleString('en-US')}
+                                  ${(listing.price || 0).toLocaleString('en-US')}
                                 </span>
                                 {marketData?.market_price && (
                                   <span className={`text-[8px] font-black font-mono transition-colors ${(marketData.market_price - listing.price) > 0 ? 'text-green-400' : 'text-red-400'}`}>
@@ -1409,27 +1535,36 @@ export default function App() {
                                   </span>
                                 )}
                               </div>
-                              <div className="flex flex-col mt-0.5 opacity-60">
-                                <span className="text-[7.5px] font-mono text-gray-500 uppercase leading-none">Stack: ${formatCompactNumber(listing.price * listing.quantity)}</span>
+                              <div className="flex flex-col mt-0.5 space-y-0.5">
+                                <div className="flex items-center gap-1.5 opacity-60">
+                                  <span className="text-[7.5px] font-mono text-gray-500 uppercase leading-none">Value: ${formatCompactNumber(marketData?.market_price || 0)}</span>
+                                  <span className="text-[7.5px] font-mono text-gray-500 uppercase leading-none border-l border-white/10 pl-1.5">Stack: ${formatCompactNumber(listing.price * listing.quantity)}</span>
+                                </div>
                                 {marketData?.market_price && (
-                                  <span className={`text-[7.5px] font-mono font-bold uppercase leading-none mt-0.5 ${(marketData.market_price - listing.price) > 0 ? 'text-green-500/80' : 'text-red-500/80'}`}>
+                                  <div className={`flex items-center gap-1 text-[8.5px] font-black uppercase leading-none py-0.5 px-1 rounded bg-white/5 w-fit ${(marketData.market_price - listing.price) > 0 ? 'text-green-400' : 'text-red-400'}`}>
                                     Profit: ${(marketData.market_price - listing.price) >= 0 ? '+' : ''}
                                     {formatCompactNumber((marketData.market_price - listing.price) * listing.quantity)}
-                                  </span>
+                                  </div>
                                 )}
                               </div>
                             </div>
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex flex-col">
-                              <span className="text-[11px] font-black text-gray-400">{listing.quantity.toLocaleString('en-US')}</span>
+                              <span className="text-[11px] font-black text-gray-400">{(listing.quantity || 0).toLocaleString('en-US')}</span>
                               <span className="text-[8px] font-bold text-gray-600 uppercase tracking-tighter">UNITS</span>
                             </div>
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <a href={`https://www.torn.com/bazaar.php?userId=${listing.player_id}#/`} target="_blank" className="inline-flex items-center gap-1 bg-purple-600/10 hover:bg-purple-600 text-purple-400 hover:text-white border border-purple-500/30 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg active:scale-95 group/buy">
-                              Buy Now <ArrowRightLeft className="w-3 h-3 group-hover/buy:translate-x-0.5 transition-transform" />
-                            </a>
+                             <a 
+                               href={marketMode === 'market' 
+                                 ? `https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemID=${activeItemId}`
+                                 : `https://www.torn.com/bazaar.php?userId=${listing.player_id}#/`} 
+                               target="_blank" 
+                               className="inline-flex items-center gap-1 bg-purple-600/10 hover:bg-purple-600 text-purple-400 hover:text-white border border-purple-500/30 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all shadow-lg active:scale-95 group/buy"
+                             >
+                               {marketMode === 'market' ? 'Market' : 'Buy Now'} <ArrowRightLeft className="w-3 h-3 group-hover/buy:translate-x-0.5 transition-transform" />
+                             </a>
                           </td>
                         </motion.tr>
                       );
@@ -1458,7 +1593,7 @@ export default function App() {
                  </div>
                  <div className="mt-3 pt-3 border-t border-white/5 flex items-center justify-between">
                     <span className="text-[10px] font-bold text-gray-500 uppercase">Delta</span>
-                    <span className={`text-xs font-black font-mono ${calculateProfit() >= 0 ? 'text-green-400' : 'text-red-400'}`}>${calculateProfit().toLocaleString('en-US')}</span>
+                    <span className={`text-xs font-black font-mono ${calculateProfit() >= 0 ? 'text-green-400' : 'text-red-400'}`}>${(calculateProfit() || 0).toLocaleString('en-US')}</span>
                  </div>
               </div>
 
@@ -1650,7 +1785,7 @@ export default function App() {
                                     ID:{user.player_id} <Copy className="w-2.5 h-2.5" />
                                   </button>
                                   <span className="text-[10px] text-blue-400 font-bold">Level {user.level}</span>
-                                  <span className={`text-[10px] font-bold ${getAgeColor(user.age)}`}>{user.age.toLocaleString()}D</span>
+                                  <span className={`text-[10px] font-bold ${getAgeColor(user?.age || 0)}`}>{(user?.age || 0).toLocaleString()}D</span>
                                 </div>
                               </div>
                             </div>
@@ -1781,12 +1916,12 @@ export default function App() {
                                              </span>
                                            )}
                                          </div>
-                                         <span className="text-[8px] text-gray-600 font-mono font-bold">x{item.quantity.toLocaleString()}</span>
+                                         <span className="text-[8px] text-gray-600 font-mono font-bold">x{(item?.quantity || 0).toLocaleString()}</span>
                                        </div>
                                     </div>
                                     <div className="text-right flex flex-col items-end">
                                        <div className="flex items-center gap-1.5">
-                                          <span className="text-[10px] font-black text-purple-400">${item.price.toLocaleString()}</span>
+                                          <span className="text-[10px] font-black text-purple-400">${(item?.price || 0).toLocaleString()}</span>
                                           {mp && (
                                             <span className={`text-[8px] font-mono font-black ${profitPerUnit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                                               {profitPerUnit >= 0 ? '+' : ''}{formatCompactNumber(profitPerUnit)}
@@ -1851,6 +1986,7 @@ export default function App() {
           margin: 0; 
         }
       `}} />
+      <audio ref={audioRef} src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto" />
     </div>
   );
 }

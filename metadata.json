@@ -1,6 +1,6 @@
 {
   "name": "Shadow Bazaar",
-  "description": "A premium Torn City marketplace tool with dark Material 3 design, real-time listing tracking, and profit calculations.",
+  "description": "A premium Torn City marketplace tool with dark Material 3 design, real-time Bazaar and Item Market tracking, and cross-market profit calculations.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }
